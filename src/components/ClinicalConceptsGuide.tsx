@@ -11,14 +11,17 @@ import {
   CheckCircle2, 
   Droplet, 
   Flame,
-  Stethoscope
+  Stethoscope,
+  Info,
+  AlertTriangle,
+  Scale
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 
 export function ClinicalConceptsGuide() {
   const [isOpen, setIsOpen] = useState(false);
-  const [selectedTopic, setSelectedTopic] = useState<'early_vs_pk' | 'anuric_vs_hd' | 'targets_mgl'>('early_vs_pk');
+  const [selectedTopic, setSelectedTopic] = useState<'early_vs_pk' | 'scr_rounding'>('scr_rounding');
 
   return (
     <Card className="border-blue-200 bg-gradient-to-br from-blue-50/50 via-indigo-50/20 to-white shadow-sm overflow-hidden">
@@ -40,7 +43,7 @@ export function ClinicalConceptsGuide() {
               </Badge>
             </div>
             <p className="text-xs text-slate-500 font-medium mt-0.5">
-              Clear distinctions: Early Predictor vs Random PK, Anuric vs Hemodialysis, and 10–15 vs 15–20 mg/L targets.
+              Practical guidance on Serum Creatinine &lt; 60 µmol/L rounding, VAN prevention, and TDM sampling modalities.
             </p>
           </div>
         </div>
@@ -62,38 +65,87 @@ export function ClinicalConceptsGuide() {
             {/* Topic Navigation Pills */}
             <div className="flex items-center gap-2 overflow-x-auto pb-1">
               <button
+                onClick={() => setSelectedTopic('scr_rounding')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 ${
+                  selectedTopic === 'scr_rounding'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                }`}
+              >
+                <Scale className="w-3.5 h-3.5" />
+                1. Low SCr (&lt; 60 µmol/L) Rounding & VAN Prevention
+              </button>
+              <button
                 onClick={() => setSelectedTopic('early_vs_pk')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 ${
                   selectedTopic === 'early_vs_pk'
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
                 }`}
               >
-                1. Early Predictor vs Random PK vs TDM
-              </button>
-              <button
-                onClick={() => setSelectedTopic('anuric_vs_hd')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
-                  selectedTopic === 'anuric_vs_hd'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                }`}
-              >
-                2. Anuric / AKI vs Hemodialysis (HD)
-              </button>
-              <button
-                onClick={() => setSelectedTopic('targets_mgl')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
-                  selectedTopic === 'targets_mgl'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                }`}
-              >
-                3. Vancomycin Targets: 10–15 vs 15–20 mg/L
+                <Clock className="w-3.5 h-3.5" />
+                2. Early Predictor vs Random PK vs TDM
               </button>
             </div>
 
-            {/* Topic Content 1: Early vs Random PK vs Steady State */}
+            {/* Topic Content 1: Low SCr Rounding vs Actual SCr Clinical Guide */}
+            {selectedTopic === 'scr_rounding' && (
+              <div className="space-y-4 text-xs">
+                <div className="p-4 bg-amber-50/80 rounded-2xl border border-amber-200 text-slate-700 leading-relaxed space-y-2">
+                  <div className="flex items-center gap-2 text-amber-900 font-black text-sm">
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                    Clinical Dilemma: Low Serum Creatinine (&lt; 60 µmol/L) & Vancomycin-Associated Nephrotoxicity (VAN)
+                  </div>
+                  <p>
+                    In patients with very low measured serum creatinine (e.g. 40–55 µmol/L), Cockcroft-Gault formula can produce an artificially inflated CrCl (&gt; 120–150 mL/min). If unadjusted, this can lead to excessive frequency or total daily dose, potentially overshooting target levels and precipitating Vancomycin-Associated Nephrotoxicity (VAN).
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* When to Round SCr to 60 */}
+                  <div className="p-4 bg-white rounded-2xl border-2 border-emerald-200 shadow-xs space-y-2.5">
+                    <div className="flex justify-between items-center">
+                      <span className="font-black text-emerald-950 text-sm flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" /> When to Round SCr to 60 µmol/L (0.68 mg/dL)
+                      </span>
+                      <Badge className="bg-emerald-100 text-emerald-800 border-none text-[9px] font-black">Safety Floor</Badge>
+                    </div>
+                    <p className="font-bold text-slate-800">Indications to Round Up (Prevents Overdosing):</p>
+                    <ul className="list-disc list-inside space-y-1 text-slate-600 leading-relaxed">
+                      <li><span className="font-bold text-slate-800">Elderly patients (&gt; 65 years):</span> Low SCr is usually artifactual due to age-related sarcopenia / reduced muscle mass.</li>
+                      <li><span className="font-bold text-slate-800">Malnourished / Cachectic / Amputee patients:</span> Extremely low creatinine generation rate falsely mimics hyper-filtration.</li>
+                      <li><span className="font-bold text-slate-800">High Risk of Nephrotoxicity:</span> Concomitant nephrotoxins (Pip/Tazo, Aminoglycosides, Polymyxins, NSAIDs, IV contrast) or baseline borderline renal reserve.</li>
+                      <li><span className="font-bold text-slate-800">Targeting standard infections:</span> SSTI, uncomplicated bacteremia where safety margin is paramount.</li>
+                    </ul>
+                    <div className="p-2.5 bg-emerald-50 rounded-xl text-emerald-800 font-bold text-[11px]">
+                      Rounding up to 60 µmol/L tempers estimated CrCl and helps prevent toxic drug accumulation.
+                    </div>
+                  </div>
+
+                  {/* When to Keep Actual SCr (<60) */}
+                  <div className="p-4 bg-white rounded-2xl border-2 border-blue-200 shadow-xs space-y-2.5">
+                    <div className="flex justify-between items-center">
+                      <span className="font-black text-blue-950 text-sm flex items-center gap-1.5">
+                        <Activity className="w-4 h-4 text-blue-600" /> When to Keep Actual Measured SCr (&lt; 60 µmol/L)
+                      </span>
+                      <Badge className="bg-blue-100 text-blue-800 border-none text-[9px] font-black">True Clearance</Badge>
+                    </div>
+                    <p className="font-bold text-slate-800">Scenarios where Actual Low SCr Reflects True High Clearance:</p>
+                    <ul className="list-disc list-inside space-y-1 text-slate-600 leading-relaxed">
+                      <li><span className="font-bold text-slate-800">Augmented Renal Clearance (ARC):</span> Young, athletic, or critically ill hyperdynamic septic/trauma/burn patients (CrCl &gt; 130 mL/min).</li>
+                      <li><span className="font-bold text-slate-800">High Muscle Mass & Good Nutrition:</span> Well-nourished young adults with genuinely superior renal clearance.</li>
+                      <li><span className="font-bold text-slate-800">Severe Deep-Seated MRSA:</span> CNS meningitis, infective endocarditis, or osteomyelitis where under-dosing is life-threatening.</li>
+                      <li><span className="font-bold text-slate-800">Rapid TDM follow-up:</span> When an Early Predictor or 24–48h TDM sample is planned to rapidly adjust levels.</li>
+                    </ul>
+                    <div className="p-2.5 bg-blue-50 rounded-xl text-blue-800 font-bold text-[11px]">
+                      Use actual SCr, then compare the 750 mg vs 1000 mg options and monitor trough at Dose 3/4.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Topic Content 2: Early vs Random PK vs Steady State */}
             {selectedTopic === 'early_vs_pk' && (
               <div className="space-y-4 text-xs">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -148,105 +200,6 @@ export function ClinicalConceptsGuide() {
                     <p className="font-bold text-slate-800 text-[11px]">How does it work?</p>
                     <p className="text-slate-600 leading-relaxed">
                       Applies linear proportional adjustment (<span className="font-mono font-bold">New Dose = Old Dose × Target / Measured</span>) to reach therapeutic window.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Topic Content 2: Anuric vs Hemodialysis */}
-            {selectedTopic === 'anuric_vs_hd' && (
-              <div className="space-y-4 text-xs">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Anuric */}
-                  <div className="p-4 bg-white rounded-2xl border-2 border-red-200 shadow-xs space-y-2.5">
-                    <div className="flex justify-between items-center">
-                      <span className="font-black text-red-950 text-sm flex items-center gap-1.5">
-                        <Droplet className="w-4 h-4 text-red-600" /> Anuric / AKI (No Urine Output)
-                      </span>
-                      <Badge className="bg-red-100 text-red-800 border-none text-[9px] font-black">No Clearance</Badge>
-                    </div>
-                    <div className="space-y-1.5 text-slate-600 leading-relaxed">
-                      <p>
-                        • <span className="font-bold text-slate-900">Physiology:</span> Renal clearance is 0 mL/min. Vancomycin elimination relies solely on negligible non-renal clearance (<span className="font-bold">T½ &gt; 100–150 hours</span>).
-                      </p>
-                      <p>
-                        • <span className="font-bold text-slate-900">Dosing Strategy:</span> Give a full <span className="font-bold text-red-700">Loading Dose (25–30 mg/kg)</span>.
-                      </p>
-                      <p>
-                        • <span className="font-bold text-slate-900">Maintenance:</span> <span className="font-black text-red-800">NO FIXED SCHEDULE</span>. Do NOT give daily doses. Measure serum level every 24–48h; re-dose PRN (e.g. 500–1000 mg) only when level falls below target (&lt;10–15 mg/L).
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Hemodialysis */}
-                  <div className="p-4 bg-white rounded-2xl border-2 border-blue-200 shadow-xs space-y-2.5">
-                    <div className="flex justify-between items-center">
-                      <span className="font-black text-blue-950 text-sm flex items-center gap-1.5">
-                        <Activity className="w-4 h-4 text-blue-600" /> Intermittent Hemodialysis (HD)
-                      </span>
-                      <Badge className="bg-blue-100 text-blue-800 border-none text-[9px] font-black">Active HD Clearance</Badge>
-                    </div>
-                    <div className="space-y-1.5 text-slate-600 leading-relaxed">
-                      <p>
-                        • <span className="font-bold text-slate-900">Physiology:</span> High-flux dialyzer membranes remove <span className="font-bold text-blue-700">30% to 50%</span> of circulating vancomycin during a 4-hour session.
-                      </p>
-                      <p>
-                        • <span className="font-bold text-slate-900">Loading Weight:</span> If obese, use <span className="font-bold text-blue-700">Dosing Weight (AdjBW)</span> for 25–30 mg/kg calculation.
-                      </p>
-                      <p>
-                        • <span className="font-bold text-slate-900">Administration Protocol:</span>
-                        <br />- If dose &lt; 1g: Dilute in 100 mL NS, infuse during the <span className="font-bold">last hour of HD</span>.
-                        <br />- If dose ≥ 1g: Dilute in 200 mL NS, start during last hour of HD and continue 1 hour post-HD.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Topic Content 3: Target Ranges (10-15 vs 15-20 mg/L) */}
-            {selectedTopic === 'targets_mgl' && (
-              <div className="space-y-4 text-xs">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Standard Lower Target */}
-                  <div className="p-4 bg-white rounded-2xl border-2 border-emerald-200 shadow-xs space-y-2.5">
-                    <div className="flex justify-between items-center">
-                      <span className="font-black text-emerald-950 text-sm flex items-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Lower Target: 10 – 15 mg/L
-                      </span>
-                      <Badge className="bg-emerald-100 text-emerald-800 border-none text-[9px] font-black">Midpoint: 12.5 mg/L</Badge>
-                    </div>
-                    <p className="font-bold text-slate-800">Primary Clinical Indications:</p>
-                    <ul className="list-disc list-inside space-y-1 text-slate-600">
-                      <li>Uncomplicated Skin & Soft Tissue Infections (SSTI) / Cellulitis</li>
-                      <li>Urinary Tract Infections (UTI) due to Enterococcus / MRSA</li>
-                      <li>Mild to moderate intra-abdominal infections</li>
-                      <li>Catheter-related bloodstream infections (uncomplicated)</li>
-                    </ul>
-                    <p className="text-[11px] text-emerald-700 font-bold bg-emerald-50 p-2 rounded-lg">
-                      Sufficient tissue penetration while minimizing nephrotoxicity risk in lower-acuity infections.
-                    </p>
-                  </div>
-
-                  {/* High Target */}
-                  <div className="p-4 bg-white rounded-2xl border-2 border-amber-200 shadow-xs space-y-2.5">
-                    <div className="flex justify-between items-center">
-                      <span className="font-black text-amber-950 text-sm flex items-center gap-1.5">
-                        <Flame className="w-4 h-4 text-amber-600" /> Higher Target: 15 – 20 mg/L
-                      </span>
-                      <Badge className="bg-amber-100 text-amber-800 border-none text-[9px] font-black">Midpoint: 17.5 mg/L</Badge>
-                    </div>
-                    <p className="font-bold text-slate-800">Primary Clinical Indications:</p>
-                    <ul className="list-disc list-inside space-y-1 text-slate-600">
-                      <li>MRSA Bacteremia / Septic Shock</li>
-                      <li>Infective Endocarditis (Native or Prosthetic Valve)</li>
-                      <li>Osteomyelitis / Septic Arthritis</li>
-                      <li>Hospital-Acquired / Ventilator-Associated Pneumonia (HAP/VAP)</li>
-                      <li>Bacterial Meningitis / CNS Infections</li>
-                    </ul>
-                    <p className="text-[11px] text-amber-800 font-bold bg-amber-50 p-2 rounded-lg">
-                      Ensures high AUC/MIC (400–600) for deep-seated or life-threatening MRSA infections.
                     </p>
                   </div>
                 </div>

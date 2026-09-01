@@ -2,28 +2,27 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Pill, 
-  Search, 
   Sparkles, 
-  Clock, 
-  CheckCircle2, 
-  FlaskConical, 
-  HeartPulse, 
-  Brain, 
+  ChevronDown,
+  Activity,
   ShieldAlert,
-  ChevronRight,
+  Stethoscope,
+  FlaskConical,
+  HeartPulse,
+  Brain,
+  SlidersHorizontal,
   Info
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 
-export type DrugId = 'vanco' | 'bactrim' | 'fluco' | 'amikacin' | 'gentamicin' | 'lithium' | 'cyclosporine' | 'tacrolimus' | 'digoxin' | 'phenytoin';
+export type DrugId = 'vanco' | 'gentamicin' | 'amikacin' | 'bactrim' | 'fluco' | 'lithium' | 'cyclosporine' | 'tacrolimus' | 'digoxin' | 'phenytoin';
 
 export interface DrugItem {
   id: DrugId;
   name: string;
   genericName: string;
-  category: 'antibacterial' | 'antifungal' | 'immunosuppressant' | 'neuropsych' | 'cardiac';
+  group: 'routine_tdm' | 'special_nontdm' | 'other_tdm';
   status: 'active' | 'pipeline';
   route: string;
   primaryTarget: string;
@@ -32,94 +31,107 @@ export interface DrugItem {
 }
 
 export const DRUG_CATALOG: DrugItem[] = [
-  // Active Calculators
+  // 1. ROUTINE / COMMONLY USED ANTIMICROBIAL TDM
   {
     id: 'vanco',
     name: 'Vancomycin',
     genericName: 'Vancomycin HCl',
-    category: 'antibacterial',
+    group: 'routine_tdm',
     status: 'active',
     route: 'IV Infusion',
     primaryTarget: '10–15 or 15–20 mg/L (AUC 400–600)',
-    description: 'Glycopeptide antibacterial with full loading, maintenance, Bayesian PK & early level solver.',
+    description: '1-compartment PK with 1h post-infusion peak, steady-state trough, AUC24/MIC, and Bayesian solver.',
     unit: 'mg/L'
   },
   {
-    id: 'bactrim',
-    name: 'Bactrim / Cotrimoxazole',
-    genericName: 'Trimethoprim / Sulfamethoxazole',
-    category: 'antibacterial',
+    id: 'gentamicin',
+    name: 'Gentamicin',
+    genericName: 'Gentamicin Sulfate',
+    group: 'routine_tdm',
     status: 'active',
-    route: 'Oral / IV Infusion',
+    route: 'IV / IM',
+    primaryTarget: 'Hartford: < 1.0 mg/L | Conv: Peak 5–10, Trough < 1–2',
+    description: 'Once-daily Hartford (7 mg/kg), Synergy (1 mg/kg), and conventional multiple-daily dosing with CrCl adjustments.',
+    unit: 'mg/L'
+  },
+  {
+    id: 'amikacin',
+    name: 'Amikacin',
+    genericName: 'Amikacin Sulfate',
+    group: 'routine_tdm',
+    status: 'active',
+    route: 'IV Infusion',
+    primaryTarget: 'Extended: Peak 40–60, Trough < 2.5–5 | Conv: Peak 20–30',
+    description: 'High-dose extended interval (15–20 mg/kg) and conventional divided dosing (7.5 mg/kg q12h).',
+    unit: 'mg/L'
+  },
+
+  // 2. SPECIAL & NON-TDM PROTOCOLS
+  {
+    id: 'bactrim',
+    name: 'Bactrim (Co-trimoxazole)',
+    genericName: 'Trimethoprim / Sulfamethoxazole (TMP/SMX)',
+    group: 'special_nontdm',
+    status: 'active',
+    route: 'Oral SS Tabs / IV Ampoules',
     primaryTarget: 'Dosed by TMP (mg/kg/day)',
-    description: 'Antifolate combo for standard & severe PJP infections with CrCl and Hemodialysis adjustments.',
+    description: 'Non-TDM protocol for PJP and standard bacterial infections with SS tablet count, IV dilution, and HD replacement.',
     unit: 'mg TMP'
   },
   {
     id: 'fluco',
     name: 'Fluconazole',
     genericName: 'Fluconazole',
-    category: 'antifungal',
+    group: 'special_nontdm',
     status: 'active',
     route: 'Oral / IV',
     primaryTarget: '10–25 mg/L (Indication-guided)',
-    description: 'Triazole antifungal with indication-specific targets (Candidemia, Meningitis) and renal TDM.',
+    description: 'Indication-guided dosing (Candidemia, Meningitis) and linear renal TDM adjustments.',
     unit: 'mg/L'
   },
 
-  // Future Modules (Pipeline)
-  {
-    id: 'gentamicin',
-    name: 'Gentamicin / Amikacin',
-    genericName: 'Aminoglycosides',
-    category: 'antibacterial',
-    status: 'pipeline',
-    route: 'IV / IM',
-    primaryTarget: 'Peak: 5–10 (Gent) / 20–30 (Ami) mg/L',
-    description: 'Extended-interval (Hartford) & conventional Peak/Trough kinetic calculators.',
-    unit: 'mg/L'
-  },
+  // 3. OTHER / SPECIALIZED TDM (Dropdown Menu)
   {
     id: 'cyclosporine',
     name: 'Cyclosporine & Tacrolimus',
     genericName: 'Calcineurin Inhibitors',
-    category: 'immunosuppressant',
+    group: 'other_tdm',
     status: 'pipeline',
     route: 'Oral / IV',
-    primaryTarget: 'C0 (100–300 ng/mL) / C2 (800–1200 ng/mL)',
-    description: 'Solid organ transplant immunosuppressive therapeutic drug monitoring.',
-    unit: 'ng/mL / ug/L'
-  },
-  {
-    id: 'lithium',
-    name: 'Lithium Carbonate',
-    genericName: 'Lithium',
-    category: 'neuropsych',
-    status: 'pipeline',
-    route: 'Oral',
-    primaryTarget: '0.6–1.0 mmol/L (Acute: 0.8–1.2)',
-    description: 'Mood stabilizer TDM drawn exactly 12 hours post-evening dose.',
-    unit: 'mmol/L'
+    primaryTarget: 'Tacro: 5–15 ng/mL | Cyclo: C0 100–300 ng/mL',
+    description: 'Solid organ transplant immunosuppression monitoring.',
+    unit: 'ng/mL'
   },
   {
     id: 'digoxin',
     name: 'Digoxin',
     genericName: 'Digoxin',
-    category: 'cardiac',
+    group: 'other_tdm',
     status: 'pipeline',
     route: 'Oral / IV',
-    primaryTarget: '0.5–0.9 ng/mL (HF) / 0.8–2.0 (AFib)',
-    description: 'Cardiac glycoside inotropic agent with renal & P-gp drug interaction adjustments.',
+    primaryTarget: 'HF: 0.5–0.9 ng/mL | AFib: 0.8–2.0 ng/mL',
+    description: 'Inotropic cardiac glycoside with renal & P-glycoprotein adjustments.',
     unit: 'ng/mL'
+  },
+  {
+    id: 'lithium',
+    name: 'Lithium Carbonate',
+    genericName: 'Lithium',
+    group: 'other_tdm',
+    status: 'pipeline',
+    route: 'Oral',
+    primaryTarget: 'Maintenance: 0.6–1.0 mmol/L | Acute: 0.8–1.2 mmol/L',
+    description: 'Bipolar mood stabilizer 12-hour post-dose serum monitoring.',
+    unit: 'mmol/L'
   },
   {
     id: 'phenytoin',
     name: 'Phenytoin',
     genericName: 'Phenytoin Sodium',
-    category: 'neuropsych',
+    group: 'other_tdm',
     status: 'pipeline',
     route: 'Oral / IV',
-    primaryTarget: 'Total: 10–20 mg/L (Free: 1–2 mg/L)',
+    primaryTarget: 'Total: 10–20 mg/L | Free: 1–2 mg/L',
     description: 'Non-linear Michaelis-Menten kinetics with Sheiner-Tozer albumin correction.',
     unit: 'mg/L'
   }
@@ -131,124 +143,157 @@ interface DrugDirectoryProps {
 }
 
 export function DrugDirectory({ activeDrug, onSelectDrug }: DrugDirectoryProps) {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [pipelineModalDrug, setPipelineModalDrug] = useState<DrugItem | null>(null);
+  const [showOtherMenu, setShowOtherMenu] = useState(false);
 
-  const categories = [
-    { id: 'all', label: 'All Drugs' },
-    { id: 'antibacterial', label: 'Antibacterials' },
-    { id: 'antifungal', label: 'Antifungals' },
-    { id: 'immunosuppressant', label: 'Immunosuppressants' },
-    { id: 'neuropsych', label: 'Neuro & Psych' },
-    { id: 'cardiac', label: 'Cardiology' },
-  ];
+  const routineDrugs = DRUG_CATALOG.filter(d => d.group === 'routine_tdm');
+  const specialDrugs = DRUG_CATALOG.filter(d => d.group === 'special_nontdm');
+  const otherDrugs = DRUG_CATALOG.filter(d => d.group === 'other_tdm');
 
-  const filteredDrugs = DRUG_CATALOG.filter(drug => {
-    const matchesSearch = drug.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          drug.genericName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          drug.description.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === 'all' || drug.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  const activeDrugObj = DRUG_CATALOG.find(d => d.id === activeDrug);
 
   return (
     <div className="space-y-4">
-      {/* Category selector pills & Search */}
-      <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
-          {categories.map(cat => (
-            <button
-              key={cat.id}
-              onClick={() => setSelectedCategory(cat.id)}
-              className={`px-3 py-1.5 text-xs font-black rounded-lg transition-all whitespace-nowrap ${
-                selectedCategory === cat.id
-                  ? 'bg-slate-900 text-white shadow-sm'
-                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
+      {/* Navigation Header with Clear Grouping */}
+      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+        {/* Section 1: Routine / Common Antimicrobial TDM */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-black uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-blue-600" />
+              Common Antimicrobial TDM
+            </span>
+            <span className="text-[10px] font-bold text-slate-400">High-frequency clinical use</span>
+          </div>
 
-        <div className="relative w-full sm:w-64">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <Input 
-            placeholder="Search drug or class..." 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 h-9 text-xs font-bold border-slate-200 bg-white"
-          />
-        </div>
-      </div>
-
-      {/* Drug Switcher Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {filteredDrugs.map(drug => {
-          const isActive = activeDrug === drug.id;
-          const isOperational = drug.status === 'active';
-
-          return (
-            <div
-              key={drug.id}
-              onClick={() => {
-                if (isOperational) {
-                  onSelectDrug(drug.id);
-                } else {
-                  setPipelineModalDrug(drug);
-                }
-              }}
-              className={`relative text-left p-3.5 rounded-2xl border transition-all cursor-pointer select-none ${
-                isActive
-                  ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/20 ring-2 ring-blue-600 ring-offset-2'
-                  : isOperational
-                  ? 'bg-white text-slate-800 border-slate-200 hover:border-blue-300 hover:shadow-sm'
-                  : 'bg-slate-50/70 text-slate-500 border-slate-200/60 opacity-80 hover:opacity-100'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-2 mb-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className={`p-1.5 rounded-lg ${isActive ? 'bg-white/20 text-white' : isOperational ? 'bg-blue-50 text-blue-600' : 'bg-slate-200 text-slate-500'}`}>
-                    <Pill className="w-4 h-4" />
-                  </span>
-                  <div>
-                    <h3 className={`text-sm font-black tracking-tight leading-none ${isActive ? 'text-white' : 'text-slate-900'}`}>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {routineDrugs.map(drug => {
+              const isActive = activeDrug === drug.id;
+              return (
+                <button
+                  key={drug.id}
+                  onClick={() => onSelectDrug(drug.id)}
+                  className={`p-3 rounded-xl border text-left transition-all relative select-none ${
+                    isActive
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/20 ring-2 ring-blue-600 ring-offset-1'
+                      : 'bg-slate-50/80 hover:bg-slate-100/80 text-slate-800 border-slate-200/80'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs font-black tracking-tight ${isActive ? 'text-white' : 'text-slate-900'}`}>
                       {drug.name}
-                    </h3>
-                    <p className={`text-[10px] font-bold ${isActive ? 'text-blue-100' : 'text-slate-400'} mt-0.5`}>
-                      {drug.genericName}
-                    </p>
+                    </span>
+                    <Badge className={`text-[9px] font-black uppercase px-1.5 py-0 border-none ${
+                      isActive ? 'bg-white text-blue-700' : 'bg-blue-100 text-blue-800'
+                    }`}>
+                      TDM
+                    </Badge>
                   </div>
-                </div>
+                  <p className={`text-[10px] mt-0.5 truncate font-medium ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
+                    {drug.primaryTarget}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
-                {isOperational ? (
-                  <Badge className={`text-[9px] font-black uppercase px-1.5 py-0.5 border-none ${isActive ? 'bg-white text-blue-600' : 'bg-green-100 text-green-700'}`}>
-                    Ready
-                  </Badge>
-                ) : (
-                  <Badge variant="outline" className="text-[9px] font-black uppercase px-1.5 py-0.5 bg-slate-100 text-slate-500 border-slate-200">
-                    Roadmap
-                  </Badge>
+        {/* Divider */}
+        <div className="border-t border-slate-100 pt-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+            <span className="text-[11px] font-black uppercase tracking-wider text-purple-700 flex items-center gap-1.5">
+              <Pill className="w-3.5 h-3.5 text-purple-600" />
+              Special & Non-TDM Protocols
+            </span>
+            
+            {/* Dropdown Toggle for Infrequent / Other TDM */}
+            <div className="relative">
+              <button
+                onClick={() => setShowOtherMenu(!showOtherMenu)}
+                className="text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 transition-colors"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5 text-slate-500" />
+                Other TDM Modules ({otherDrugs.length})
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showOtherMenu ? 'rotate-180' : ''}`} />
+              </button>
+
+              {/* Other TDM Dropdown Menu */}
+              <AnimatePresence>
+                {showOtherMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 5 }}
+                    className="absolute right-0 top-full mt-1.5 w-72 bg-white rounded-xl shadow-xl border border-slate-200 p-2 z-40 space-y-1"
+                  >
+                    <div className="px-2 py-1 border-b border-slate-100 mb-1">
+                      <p className="text-[10px] font-black uppercase text-slate-400">Specialized & Transplant TDM</p>
+                      <p className="text-[11px] text-slate-500">Less commonly requested drugs</p>
+                    </div>
+                    {otherDrugs.map(drug => (
+                      <button
+                        key={drug.id}
+                        onClick={() => {
+                          setPipelineModalDrug(drug);
+                          setShowOtherMenu(false);
+                        }}
+                        className="w-full text-left p-2 rounded-lg hover:bg-slate-50 flex items-center justify-between group transition-colors"
+                      >
+                        <div>
+                          <p className="text-xs font-bold text-slate-800 group-hover:text-blue-600">{drug.name}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{drug.primaryTarget}</p>
+                        </div>
+                        <Badge variant="outline" className="text-[9px] font-bold text-slate-400 border-slate-200">
+                          Pipeline
+                        </Badge>
+                      </button>
+                    ))}
+                  </motion.div>
                 )}
-              </div>
-
-              <p className={`text-[11px] font-medium line-clamp-1 mt-2 ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
-                {drug.description}
-              </p>
-
-              <div className={`mt-2.5 pt-2 border-t flex items-center justify-between text-[10px] font-bold ${
-                isActive ? 'border-white/20 text-blue-100' : 'border-slate-100 text-slate-400'
-              }`}>
-                <span>Target: {drug.primaryTarget.split('(')[0]}</span>
-                <span className="uppercase text-[9px] tracking-wider">{drug.unit}</span>
-              </div>
+              </AnimatePresence>
             </div>
-          );
-        })}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {specialDrugs.map(drug => {
+              const isActive = activeDrug === drug.id;
+              const isNonTdm = drug.id === 'bactrim';
+
+              return (
+                <button
+                  key={drug.id}
+                  onClick={() => onSelectDrug(drug.id)}
+                  className={`p-3 rounded-xl border text-left transition-all relative select-none ${
+                    isActive
+                      ? 'bg-purple-700 text-white border-purple-700 shadow-md shadow-purple-500/20 ring-2 ring-purple-600 ring-offset-1'
+                      : 'bg-purple-50/40 hover:bg-purple-50/80 text-slate-800 border-purple-200/60'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs font-black tracking-tight ${isActive ? 'text-white' : 'text-slate-900'}`}>
+                      {drug.name}
+                    </span>
+                    <Badge className={`text-[9px] font-black uppercase px-1.5 py-0 border-none ${
+                      isActive 
+                        ? 'bg-white text-purple-800' 
+                        : isNonTdm 
+                        ? 'bg-purple-200 text-purple-900' 
+                        : 'bg-emerald-100 text-emerald-800'
+                    }`}>
+                      {isNonTdm ? 'Special Non-TDM' : 'Antifungal Protocol'}
+                    </Badge>
+                  </div>
+                  <p className={`text-[10px] mt-0.5 truncate font-medium ${isActive ? 'text-purple-100' : 'text-slate-600'}`}>
+                    {drug.description}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {/* Roadmap / Coming Soon Modal */}
+      {/* Roadmap / Coming Soon Reference Modal */}
       <AnimatePresence>
         {pipelineModalDrug && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -289,7 +334,7 @@ export function DrugDirectory({ activeDrug, onSelectDrug }: DrugDirectoryProps) 
               </div>
 
               <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                {pipelineModalDrug.description} This module is slated for the next HCTM clinical calculator update batch.
+                {pipelineModalDrug.description} This module is slated for subsequent clinical guideline integration.
               </p>
 
               <div className="pt-2 flex justify-end">

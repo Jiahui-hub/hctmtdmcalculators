@@ -237,7 +237,7 @@ export function calculateVancoPopPK(actualWeight: number, crcl: number, vdCoeff:
 
 /**
  * Predict Vancomycin Levels (Steady State)
- * One-compartment model
+ * One-compartment model with 1-hour post-infusion distribution phase
  */
 export function predictVancoLevels(
   dose: number, 
@@ -245,24 +245,310 @@ export function predictVancoLevels(
   pk: VancoPK, 
   tInfusion: number = 2,
   mic: number = 1
-): { cmax: number; cmin: number; auc24: number; aucMic: number } {
+): { cmax: number; cEndOfInfusion: number; cmin: number; auc24: number; aucMic: number } {
   const { ke, vd, cl } = pk;
   
-  // Peak (Cmax) at steady state
   const tau = interval;
   const tinf = tInfusion;
   
   const accumulationFactor = 1 / (1 - Math.exp(-ke * tau));
   const infusionFactor = (1 - Math.exp(-ke * tinf)) / (ke * tinf);
   
-  const cmax = (dose / vd) * accumulationFactor * infusionFactor;
-  const cmin = cmax * Math.exp(-ke * (tau - tinf));
+  // Concentration at the exact end of IV infusion (t = tinf)
+  const cEndOfInfusion = (dose / vd) * accumulationFactor * infusionFactor;
+  
+  // True Clinical Peak (Cmax) sampled 1 hour after infusion completion (post-distribution)
+  const cmax = cEndOfInfusion * Math.exp(-ke * 1.0);
+  
+  // Trough (Cmin) sampled immediately prior to the next dose (t = tau)
+  const cmin = cEndOfInfusion * Math.exp(-ke * (tau - tinf));
   
   const dailyDose = dose * (24 / interval);
   const auc24 = dailyDose / cl;
   const aucMic = auc24 / mic;
 
-  return { cmax, cmin, auc24, aucMic };
+  return { cmax, cEndOfInfusion, cmin, auc24, aucMic };
+}
+
+/**
+ * Vancomycin Regimen Comparison Option
+ */
+export interface VancoDosingOption {
+  dose: number;
+  mgKg: number;
+  totalDailyDose: number;
+  interval: number;
+  cmax: number;            // 1h post-infusion peak
+  cEndOfInfusion: number;
+  cmin: number;            // Trough
+  auc24: number;
+  aucMic: number;
+  clinicalTag: string;
+  suitability: 'standard_target' | 'high_target' | 'low' | 'high_risk';
+  description: string;
+}
+
+/**
+ * Generate multiple dosing regimen comparisons (500mg - 2000mg) for Vancomycin
+ */
+export function getVancoDosingOptions(
+  actualWeight: number,
+  interval: number,
+  pk: VancoPK,
+  tInfusion: number = 2,
+  mic: number = 1
+): VancoDosingOption[] {
+  if (!interval || interval <= 0 || !pk || pk.cl <= 0) return [];
+
+  const standardDoses = [500, 750, 1000, 1250, 1500, 1750, 2000];
+  
+  return standardDoses.map(dose => {
+    const levels = predictVancoLevels(dose, interval, pk, tInfusion, mic);
+    const mgKg = +(dose / actualWeight).toFixed(1);
+    const totalDailyDose = dose * (24 / interval);
+    
+    let suitability: 'standard_target' | 'high_target' | 'low' | 'high_risk' = 'low';
+    let clinicalTag = '';
+    let description = '';
+
+    if (levels.cmin >= 10 && levels.cmin <= 15) {
+      suitability = 'standard_target';
+      clinicalTag = 'Standard Target (10–15 mg/L)';
+      description = `Optimal for moderate infections, cellulitis, UTI, and standard bacteremia (AUC/MIC: ${levels.aucMic.toFixed(0)}).`;
+    } else if (levels.cmin > 15 && levels.cmin <= 20) {
+      suitability = 'high_target';
+      clinicalTag = 'Severe MRSA Target (15–20 mg/L)';
+      description = `Recommended for severe MRSA, hospital pneumonia, osteomyelitis, endocarditis, or CNS infections (AUC/MIC: ${levels.aucMic.toFixed(0)}).`;
+    } else if (levels.cmin < 10) {
+      suitability = 'low';
+      clinicalTag = 'Sub-therapeutic (< 10 mg/L)';
+      description = `Risk of clinical failure and emergence of resistance (Trough: ${levels.cmin.toFixed(1)} mg/L).`;
+    } else {
+      suitability = 'high_risk';
+      clinicalTag = 'Above Target (> 20 mg/L)';
+      description = `Increased risk of nephrotoxicity / AKI (Trough: ${levels.cmin.toFixed(1)} mg/L, AUC: ${levels.auc24.toFixed(0)}).`;
+    }
+
+    return {
+      dose,
+      mgKg,
+      totalDailyDose,
+      interval,
+      cmax: levels.cmax,
+      cEndOfInfusion: levels.cEndOfInfusion,
+      cmin: levels.cmin,
+      auc24: levels.auc24,
+      aucMic: levels.aucMic,
+      clinicalTag,
+      suitability,
+      description
+    };
+  });
+}
+
+/**
+ * Gentamicin / Tobramycin Dosing Calculator
+ */
+export interface AminoglycosideResult {
+  drug: 'gentamicin' | 'amikacin';
+  dose: number;
+  interval: number;
+  frequencyText: string;
+  regimenType: string;
+  targetPeak: string;
+  targetTrough: string;
+  infusionTime: string;
+  samplingTime: string;
+  dosingWeightUsed: number;
+  dosingWeightType: string;
+  note: string;
+}
+
+export function calculateGentamicinDose(
+  actualWeight: number,
+  ibw: number,
+  crcl: number,
+  regimen: 'hartford' | 'conventional' | 'synergy' = 'hartford'
+): AminoglycosideResult {
+  // Dosing weight: if actual > 1.2 * IBW, use AdjBW = IBW + 0.4*(ABW - IBW)
+  let dosingWeight = actualWeight;
+  let weightType = "Actual Body Weight (ABW)";
+  if (actualWeight > 1.2 * ibw) {
+    dosingWeight = ibw + 0.4 * (actualWeight - ibw);
+    weightType = "Adjusted Body Weight (AdjBW 0.4)";
+  }
+
+  if (regimen === 'hartford') {
+    // Hartford Extended-Interval: 7 mg/kg (or 5 mg/kg)
+    const rawDose = dosingWeight * 7;
+    const dose = Math.round(rawDose / 20) * 20; // Round to nearest 20-40mg
+    let interval = 24;
+    let freq = "q24h (Once Daily)";
+
+    if (crcl >= 60) {
+      interval = 24;
+      freq = "q24h (Once daily)";
+    } else if (crcl >= 40) {
+      interval = 36;
+      freq = "q36h (Extended interval)";
+    } else if (crcl >= 20) {
+      interval = 48;
+      freq = "q48h (Extended interval)";
+    } else {
+      interval = 0;
+      freq = "Conventional / Level-guided PRN (CrCl < 20 mL/min)";
+    }
+
+    return {
+      drug: 'gentamicin',
+      dose,
+      interval,
+      frequencyText: freq,
+      regimenType: "Extended-Interval (Hartford 7 mg/kg)",
+      targetPeak: "16 – 24 mg/L (Concentration-dependent kill)",
+      targetTrough: "< 1.0 mg/L (Pre-dose / 18–24h post-infusion)",
+      infusionTime: "Infuse over 30 – 60 minutes in 100 mL NS/D5W",
+      samplingTime: "Random level 6–14 hours after start of first infusion (plot on Hartford Nomogram), or trough 30m prior to next dose.",
+      dosingWeightUsed: +dosingWeight.toFixed(1),
+      dosingWeightType: weightType,
+      note: "Hartford once-daily maximizes Cmax/MIC bactericidal killing with prolonged post-antibiotic effect (PAE) and lowers nephrotoxicity risk."
+    };
+  } else if (regimen === 'synergy') {
+    // Gram-Positive Enterococcal / Streptococcal Endocarditis Synergy: 1 mg/kg q8h (or 3 mg/kg OD)
+    const rawDose = dosingWeight * 1.0;
+    const dose = Math.round(rawDose / 10) * 10;
+    let interval = 8;
+    let freq = "q8h (TDS)";
+    if (crcl < 30) {
+      interval = 24;
+      freq = "q24h (OD - Renal adjusted)";
+    } else if (crcl < 50) {
+      interval = 12;
+      freq = "q12h (BD - Renal adjusted)";
+    }
+
+    return {
+      drug: 'gentamicin',
+      dose,
+      interval,
+      frequencyText: freq,
+      regimenType: "Gram-Positive Synergy (1 mg/kg)",
+      targetPeak: "3 – 5 mg/L (Sample drawn 1h post-infusion)",
+      targetTrough: "< 1.0 mg/L (Pre-dose trough)",
+      infusionTime: "Infuse over 30 minutes in 50–100 mL NS",
+      samplingTime: "Peak 1h post-infusion; Trough 30 mins before 3rd or 4th dose.",
+      dosingWeightUsed: +dosingWeight.toFixed(1),
+      dosingWeightType: weightType,
+      note: "Low-dose synergy with beta-lactams or vancomycin for Enterococcal/Streptococcal endocarditis."
+    };
+  } else {
+    // Conventional Multiple Daily Dosing: 1.5 - 2 mg/kg loading, then 1.5 mg/kg q8h
+    const rawDose = dosingWeight * 1.7;
+    const dose = Math.round(rawDose / 20) * 20;
+    let interval = 8;
+    let freq = "q8h (TDS)";
+    if (crcl < 30) {
+      interval = 24;
+      freq = "q24h (OD)";
+    } else if (crcl < 60) {
+      interval = 12;
+      freq = "q12h (BD)";
+    }
+
+    return {
+      drug: 'gentamicin',
+      dose,
+      interval,
+      frequencyText: freq,
+      regimenType: "Conventional Multiple Daily Dosing (1.5–2 mg/kg)",
+      targetPeak: "5 – 10 mg/L (Peak 1h post-infusion)",
+      targetTrough: "< 2.0 mg/L (< 1.0 mg/L preferred)",
+      infusionTime: "Infuse over 30 – 60 minutes in 100 mL NS",
+      samplingTime: "Peak: 1h after completion of 30-min infusion. Trough: ≤ 30 mins prior to next dose.",
+      dosingWeightUsed: +dosingWeight.toFixed(1),
+      dosingWeightType: weightType,
+      note: "Traditional multiple-daily dosing for patients not qualifying for extended-interval (e.g. ascites, pregnancy, severe burns, CrCl < 20)."
+    };
+  }
+}
+
+/**
+ * Amikacin Dosing Calculator
+ */
+export function calculateAmikacinDose(
+  actualWeight: number,
+  ibw: number,
+  crcl: number,
+  regimen: 'extended' | 'conventional' = 'extended'
+): AminoglycosideResult {
+  let dosingWeight = actualWeight;
+  let weightType = "Actual Body Weight (ABW)";
+  if (actualWeight > 1.2 * ibw) {
+    dosingWeight = ibw + 0.4 * (actualWeight - ibw);
+    weightType = "Adjusted Body Weight (AdjBW 0.4)";
+  }
+
+  if (regimen === 'extended') {
+    // Extended-Interval: 15–20 mg/kg q24h
+    const rawDose = dosingWeight * 15;
+    const dose = Math.round(rawDose / 50) * 50;
+    let interval = 24;
+    let freq = "q24h (Once daily)";
+
+    if (crcl >= 60) {
+      interval = 24;
+      freq = "q24h (Once daily)";
+    } else if (crcl >= 40) {
+      interval = 36;
+      freq = "q36h (Extended interval)";
+    } else if (crcl >= 20) {
+      interval = 48;
+      freq = "q48h (Extended interval)";
+    } else {
+      interval = 0;
+      freq = "Level-guided PRN (CrCl < 20 mL/min)";
+    }
+
+    return {
+      drug: 'amikacin',
+      dose,
+      interval,
+      frequencyText: freq,
+      regimenType: "Extended-Interval Amikacin (15–20 mg/kg)",
+      targetPeak: "40 – 60 mg/L (High peak for bactericidal kill)",
+      targetTrough: "< 2.5 – 5.0 mg/L (Undetectable preferred)",
+      infusionTime: "Infuse over 30 – 60 minutes in 100–250 mL NS or D5W",
+      samplingTime: "Peak: 1h after 30-min infusion. Trough: ≤ 30 mins prior to next scheduled dose.",
+      dosingWeightUsed: +dosingWeight.toFixed(1),
+      dosingWeightType: weightType,
+      note: "High-dose extended interval provides superior bactericidal concentration-dependent kill against resistant Gram-negative bacilli."
+    };
+  } else {
+    // Conventional: 7.5 mg/kg q12h (15 mg/kg/day divided)
+    const rawDose = dosingWeight * 7.5;
+    const dose = Math.round(rawDose / 50) * 50;
+    let interval = 12;
+    let freq = "q12h (BD)";
+    if (crcl < 30) {
+      interval = 24;
+      freq = "q24h (OD - Renal adjusted)";
+    }
+
+    return {
+      drug: 'amikacin',
+      dose,
+      interval,
+      frequencyText: freq,
+      regimenType: "Conventional Divided Dosing (7.5 mg/kg q12h)",
+      targetPeak: "20 – 30 mg/L (Peak 1h post-infusion)",
+      targetTrough: "< 5.0 – 10.0 mg/L",
+      infusionTime: "Infuse over 30 – 60 minutes in 100–200 mL NS",
+      samplingTime: "Peak: 1 hour post-infusion; Trough: ≤ 30 mins before next dose.",
+      dosingWeightUsed: +dosingWeight.toFixed(1),
+      dosingWeightType: weightType,
+      note: "Conventional divided dosing for patients with severe renal impairment, meningitis, or non-qualifying ICU criteria."
+    };
+  }
 }
 
 /**

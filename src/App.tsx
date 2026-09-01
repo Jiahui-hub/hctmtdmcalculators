@@ -43,6 +43,8 @@ import {
   getVancoAdminDetails,
   calculateVancoPopPK,
   predictVancoLevels,
+  getVancoDosingOptions,
+  VancoDosingOption,
   calculateFluconazoleDose,
   adjustFluconazoleDose,
   calculateVancoKeFromTrough,
@@ -56,6 +58,7 @@ import {
 import { DrugDirectory, DrugId } from '@/src/components/DrugDirectory';
 import { PkVisualizer } from '@/src/components/PkVisualizer';
 import { ClinicalConceptsGuide } from '@/src/components/ClinicalConceptsGuide';
+import { AminoglycosideCalculator } from '@/src/components/AminoglycosideCalculator';
 
 export default function App() {
   // Active Drug Selector
@@ -67,6 +70,7 @@ export default function App() {
   const [weight, setWeight] = useState<string>('70');
   const [height, setHeight] = useState<string>('170');
   const [scr, setScr] = useState<string>('100');
+  const [roundLowScr, setRoundLowScr] = useState<boolean>(false);
 
   // Vanco Adjustment State
   const [currentVancoDose, setCurrentVancoDose] = useState<string>('1000');
@@ -77,6 +81,7 @@ export default function App() {
   const [vancoSubTab, setVancoSubTab] = useState<'initial' | 'tdm'>('initial');
   const [vancoLoadingMgKg, setVancoLoadingMgKg] = useState<string>('25');
   const [vancoMaintenanceMgKg, setVancoMaintenanceMgKg] = useState<string>('15');
+  const [selectedVancoDoseOverride, setSelectedVancoDoseOverride] = useState<number | null>(null);
   const [vancoInfusionTime, setVancoInfusionTime] = useState<string>('1');
   const [vancoVdCoeff, setVancoVdCoeff] = useState<string>('0.7');
   const [vancoTargetTroughRange, setVancoTargetTroughRange] = useState<'standard' | 'high'>('standard');
@@ -120,13 +125,17 @@ export default function App() {
   };
 
   // Derived Patient Data
+  const rawScr = parseFloat(scr) || 0;
+  const isLowScr = rawScr > 0 && rawScr < 60;
+  const effectiveScr = (roundLowScr && isLowScr) ? 60 : rawScr;
+
   const patientData = useMemo<PatientData>(() => ({
     age: parseFloat(age) || 0,
     sex,
     weight: parseFloat(weight) || 0,
     height: parseFloat(height) || 0,
-    scr: parseFloat(scr) || 0,
-  }), [age, sex, weight, height, scr]);
+    scr: effectiveScr,
+  }), [age, sex, weight, height, effectiveScr]);
 
   const ibw = useMemo(() => calculateIBW(patientData.sex, patientData.height), [patientData]);
   const dosingWeightInfo = useMemo(() => getDosingWeight(patientData.weight, ibw, patientData.height), [patientData.weight, ibw, patientData.height]);
@@ -163,14 +172,28 @@ export default function App() {
     if (vancoManualInterval !== 'auto') {
       res.interval = parseInt(vancoManualInterval);
     }
+    if (selectedVancoDoseOverride !== null) {
+      res.dose = selectedVancoDoseOverride;
+    }
     return res;
-  }, [vancoMaintenanceAuto, vancoManualInterval]);
+  }, [vancoMaintenanceAuto, vancoManualInterval, selectedVancoDoseOverride]);
   
   const vancoAdmin = useMemo(() => getVancoAdminDetails(vancoMaintenance.dose, isVancoHD), [vancoMaintenance.dose, isVancoHD]);
   const vancoLoadingAdmin = useMemo(() => getVancoAdminDetails(vancoLoading.dose, isVancoHD), [vancoLoading.dose, isVancoHD]);
 
   // PK Calculations
   const popPK = useMemo(() => calculateVancoPopPK(patientData.weight, crcl, parseFloat(vancoVdCoeff) || 0.7, isAnuric || isVancoHD), [patientData.weight, crcl, vancoVdCoeff, isAnuric, isVancoHD]);
+
+  // Vancomycin Multi-Regimen Comparative Matrix
+  const vancoDosingOptions = useMemo(() => {
+    return getVancoDosingOptions(
+      patientData.weight,
+      vancoMaintenance.interval || 12,
+      popPK,
+      parseFloat(vancoInfusionTime) || 1,
+      parseFloat(vancoMic) || 1
+    );
+  }, [patientData.weight, vancoMaintenance.interval, popPK, vancoInfusionTime, vancoMic]);
   
   const currentPK = useMemo(() => {
     const pk = {
@@ -449,14 +472,56 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="space-y-1">
-                  <Label className="text-xs font-bold text-slate-600">Serum Creatinine (µmol/L)</Label>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <Label className="text-xs font-bold text-slate-600">Serum Creatinine (µmol/L)</Label>
+                    {isLowScr && (
+                      <Badge className="bg-amber-100 text-amber-900 border-none text-[9px] font-black">
+                        Low SCr (&lt; 60)
+                      </Badge>
+                    )}
+                  </div>
                   <Input 
                     type="number" 
                     value={scr} 
                     onChange={(e) => setScr(e.target.value)} 
                     className="h-9 text-sm font-bold border-slate-200" 
                   />
+
+                  {/* Low SCr Rounding Reminder & Control */}
+                  {isLowScr && (
+                    <div className="p-3 bg-amber-50/90 rounded-xl border border-amber-200 space-y-2 mt-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="space-y-0.5">
+                          <span className="text-[11px] font-black text-amber-950 flex items-center gap-1">
+                            <Scale className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            Round SCr to 60 µmol/L (VAN Prevention)
+                          </span>
+                          <p className="text-[10px] text-amber-800 leading-tight">
+                            Cockcroft-Gault may overestimate CrCl in sarcopenic / elderly patients.
+                          </p>
+                        </div>
+                        <Switch 
+                          checked={roundLowScr} 
+                          onCheckedChange={(c) => setRoundLowScr(c)} 
+                        />
+                      </div>
+
+                      <div className="pt-1.5 border-t border-amber-200/80 flex items-center justify-between text-[10px]">
+                        <span className="text-slate-600 font-medium">
+                          {roundLowScr ? (
+                            <span className="text-emerald-700 font-bold">
+                              ✓ Rounded to 60 µmol/L (CrCl: {crcl.toFixed(1)} mL/min)
+                            </span>
+                          ) : (
+                            <span className="text-amber-800 font-bold">
+                              Using actual SCr {rawScr} µmol/L (CrCl: {crcl.toFixed(1)} mL/min)
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Special Renal States */}
@@ -543,6 +608,38 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {activeDrug === 'gentamicin' && (
+                  <div className="space-y-2 text-slate-600">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Drug:</span>
+                      <span className="font-black text-slate-900">Gentamicin IV</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Protocol:</span>
+                      <span className="font-black text-blue-600">Hartford / Synergy</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Peak Sampling:</span>
+                      <span className="font-black text-emerald-600">1h Post-Infusion</span>
+                    </div>
+                  </div>
+                )}
+                {activeDrug === 'amikacin' && (
+                  <div className="space-y-2 text-slate-600">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Drug:</span>
+                      <span className="font-black text-slate-900">Amikacin IV</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Protocol:</span>
+                      <span className="font-black text-blue-600">High-Dose Extended</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Peak Target:</span>
+                      <span className="font-black text-emerald-600">40 – 60 mg/L</span>
+                    </div>
+                  </div>
+                )}
                 {activeDrug === 'bactrim' && (
                   <div className="space-y-2 text-slate-600">
                     <div className="flex items-center justify-between">
@@ -551,11 +648,11 @@ export default function App() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="font-bold">Dosing Basis:</span>
-                      <span className="font-black text-blue-600">Trimethoprim (TMP)</span>
+                      <span className="font-black text-purple-600">Trimethoprim (TMP)</span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="font-bold">Indication:</span>
-                      <span className="font-black text-slate-900 capitalize">{bactrimIndication}</span>
+                      <span className="font-bold">Type:</span>
+                      <span className="font-black text-purple-700">Special Non-TDM</span>
                     </div>
                   </div>
                 )}
@@ -585,7 +682,7 @@ export default function App() {
             <DrugDirectory 
               activeDrug={activeDrug} 
               onSelectDrug={(id) => {
-                if (id === 'vanco' || id === 'bactrim' || id === 'fluco') {
+                if (id === 'vanco' || id === 'gentamicin' || id === 'amikacin' || id === 'bactrim' || id === 'fluco') {
                   setActiveDrug(id);
                 }
               }} 
@@ -777,14 +874,131 @@ export default function App() {
                             </span>
                           </p>
                           <p className="text-[11px] text-slate-500 font-bold mt-0.5">
-                            {isAnuric ? 'Do not repeat daily. Re-dose when level < 10-15 mg/L' : `${(vancoMaintenance.dose * (24 / (vancoMaintenance.interval || 24))).toFixed(0)} mg total daily dose`}
+                            {isAnuric 
+                              ? 'Do not repeat daily. Re-dose when level < 10-15 mg/L' 
+                              : `Target range: ${(patientData.weight * 15).toFixed(0)}–${(patientData.weight * 20).toFixed(0)} mg/dose (15–20 mg/kg) • Total: ${(vancoMaintenance.dose * (24 / (vancoMaintenance.interval || 24))).toFixed(0)} mg/day`}
                           </p>
                         </div>
-                        <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 font-medium">
-                          Dilute in <span className="font-black text-slate-900">{vancoAdmin.diluent}</span>, infuse over <span className="font-black text-slate-900">{vancoAdmin.time}</span>.
+                        <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 font-medium flex items-center justify-between">
+                          <span>Dilute in <span className="font-black text-slate-900">{vancoAdmin.diluent}</span>, infuse over <span className="font-black text-slate-900">{vancoAdmin.time}</span>.</span>
+                          {selectedVancoDoseOverride !== null && (
+                            <button
+                              onClick={() => setSelectedVancoDoseOverride(null)}
+                              className="text-[10px] font-bold text-blue-600 hover:underline"
+                            >
+                              Reset to Auto
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
+
+                    {/* Regimen Comparison & Dosing Options Matrix */}
+                    {!isAnuric && !isVancoHD && vancoDosingOptions.length > 0 && (
+                      <Card className="border-slate-200 shadow-sm bg-white overflow-hidden">
+                        <CardHeader className="py-3 bg-slate-50/80 border-b border-slate-100 flex flex-row items-center justify-between">
+                          <div>
+                            <CardTitle className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                              <Scale className="w-4 h-4 text-blue-600" />
+                              Comparative Dosing Regimens (q{vancoMaintenance.interval}h Options)
+                            </CardTitle>
+                            <CardDescription className="text-[11px] text-slate-500 font-medium mt-0.5">
+                              Weight-based guide: <span className="font-bold text-slate-800">{(patientData.weight * 15).toFixed(0)} – {(patientData.weight * 20).toFixed(0)} mg/dose</span> (15–20 mg/kg). Compare expected peaks, troughs & AUCs to select the best clinical fit.
+                            </CardDescription>
+                          </div>
+                          <Badge variant="outline" className="text-[10px] font-bold bg-white text-slate-600">
+                            CrCl: {crcl.toFixed(1)} mL/min
+                          </Badge>
+                        </CardHeader>
+                        <CardContent className="p-0 overflow-x-auto">
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                              <tr className="bg-slate-50/60 border-b border-slate-200/80 text-[10px] font-black uppercase text-slate-500">
+                                <th className="py-2.5 px-3">Regimen</th>
+                                <th className="py-2.5 px-3">mg/kg</th>
+                                <th className="py-2.5 px-3">Daily Dose</th>
+                                <th className="py-2.5 px-3">1h Peak (Cpeak)</th>
+                                <th className="py-2.5 px-3">Trough (Cmin)</th>
+                                <th className="py-2.5 px-3">AUC24 / MIC</th>
+                                <th className="py-2.5 px-3">Clinical Match</th>
+                                <th className="py-2.5 px-3 text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {vancoDosingOptions.map((opt) => {
+                                const isSelected = vancoMaintenance.dose === opt.dose;
+                                const is10To15 = opt.cmin >= 10 && opt.cmin <= 15;
+                                const is15To20 = opt.cmin > 15 && opt.cmin <= 20;
+
+                                return (
+                                  <tr 
+                                    key={opt.dose}
+                                    className={`transition-colors ${
+                                      isSelected ? 'bg-blue-50/80 font-bold' : 'hover:bg-slate-50/70'
+                                    }`}
+                                  >
+                                    <td className="py-2.5 px-3 font-black text-slate-900 flex items-center gap-1.5">
+                                      {opt.dose >= 1000 ? `${opt.dose / 1000}g` : `${opt.dose}mg`} q{opt.interval}h
+                                      {isSelected && (
+                                        <Badge className="bg-blue-600 text-white text-[8px] font-black px-1 py-0 border-none">
+                                          Active
+                                        </Badge>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-slate-600 font-medium">
+                                      {opt.mgKg.toFixed(1)} mg/kg
+                                    </td>
+                                    <td className="py-2.5 px-3 text-slate-600 font-medium">
+                                      {opt.totalDailyDose} mg/day
+                                    </td>
+                                    <td className="py-2.5 px-3 font-bold text-sky-700">
+                                      {opt.cmax.toFixed(1)} mg/L
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <span className={`font-black ${
+                                        is10To15 ? 'text-emerald-600' : is15To20 ? 'text-blue-600' : opt.cmin < 10 ? 'text-amber-600' : 'text-red-600'
+                                      }`}>
+                                        {opt.cmin.toFixed(1)} mg/L
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 font-bold text-slate-800">
+                                      <span className={opt.aucMic >= 400 && opt.aucMic <= 600 ? 'text-emerald-700 font-black' : 'text-slate-600'}>
+                                        {opt.aucMic.toFixed(0)}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <Badge variant="outline" className={`text-[9px] font-bold border-none ${
+                                        is10To15 
+                                          ? 'bg-emerald-100 text-emerald-800' 
+                                          : is15To20 
+                                          ? 'bg-blue-100 text-blue-800' 
+                                          : opt.cmin < 10 
+                                          ? 'bg-amber-100 text-amber-800' 
+                                          : 'bg-red-100 text-red-800'
+                                      }`}>
+                                        {opt.clinicalTag}
+                                      </Badge>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right">
+                                      <Button
+                                        size="sm"
+                                        variant={isSelected ? "default" : "outline"}
+                                        onClick={() => setSelectedVancoDoseOverride(opt.dose)}
+                                        className={`h-7 px-2.5 text-[10px] font-black rounded-lg ${
+                                          isSelected ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'border-slate-300 text-slate-700 hover:bg-slate-100'
+                                        }`}
+                                      >
+                                        {isSelected ? 'Selected' : 'Apply Dose'}
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </CardContent>
+                      </Card>
+                    )}
 
                     {/* Interactive PK Concentration Curve Visualizer */}
                     <PkVisualizer 
@@ -1034,18 +1248,43 @@ export default function App() {
             )}
 
             {/* ========================================================================= */}
-            {/* 2. BACTRIM / COTRIMOXAZOLE CALCULATOR */}
+            {/* 2. AMINOGLYCOSIDE (GENTAMICIN / AMIKACIN) CALCULATORS */}
+            {/* ========================================================================= */}
+            {(activeDrug === 'gentamicin' || activeDrug === 'amikacin') && (
+              <AminoglycosideCalculator
+                drug={activeDrug}
+                patient={{
+                  age: patientData.age,
+                  weight: patientData.weight,
+                  height: patientData.height,
+                  sex: patientData.sex,
+                  scr: patientData.scr,
+                  crcl,
+                  ibw,
+                  bmi: patientData.height > 0 ? patientData.weight / Math.pow(patientData.height / 100, 2) : 0
+                }}
+              />
+            )}
+
+            {/* ========================================================================= */}
+            {/* 3. BACTRIM / COTRIMOXAZOLE CALCULATOR (SPECIAL NON-TDM) */}
             {/* ========================================================================= */}
             {activeDrug === 'bactrim' && (
               <Card className="border-slate-200 shadow-sm bg-white overflow-hidden">
-                <CardHeader className="py-4 bg-slate-50/80 border-b border-slate-100 flex flex-row items-center justify-between">
+                <CardHeader className="py-4 bg-purple-50/60 border-b border-purple-100 flex flex-row items-center justify-between">
                   <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Badge className="bg-purple-700 text-white text-[9px] font-black uppercase tracking-wider border-none">
+                        Special Non-TDM Protocol
+                      </Badge>
+                      <span className="text-[10px] text-purple-700 font-bold">Trimethoprim-based dosing</span>
+                    </div>
                     <CardTitle className="text-base font-black text-slate-900 flex items-center gap-2">
-                      <Pill className="w-5 h-5 text-blue-600" />
+                      <Pill className="w-5 h-5 text-purple-700" />
                       Bactrim (Co-trimoxazole • TMP/SMX) Dosing
                     </CardTitle>
                     <CardDescription className="text-xs text-slate-500 font-medium">
-                      Calculated on Trimethoprim (TMP) component (1:5 ratio with Sulfamethoxazole SMX)
+                      Calculated on Trimethoprim (TMP) component (1:5 ratio with Sulfamethoxazole SMX) • Single Strength (SS) tablets
                     </CardDescription>
                   </div>
                   <Button 
