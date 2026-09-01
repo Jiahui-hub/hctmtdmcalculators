@@ -53,12 +53,12 @@ import {
   calculateVancoKeFromEarlyLevel,
   PatientData,
   VANCO_CONVERSION_FACTOR
-} from '@/src/lib/calculations';
+} from './lib/calculations';
 
-import { DrugDirectory, DrugId } from '@/src/components/DrugDirectory';
-import { PkVisualizer } from '@/src/components/PkVisualizer';
-import { ClinicalConceptsGuide } from '@/src/components/ClinicalConceptsGuide';
-import { AminoglycosideCalculator } from '@/src/components/AminoglycosideCalculator';
+import { DrugDirectory, DrugId } from './components/DrugDirectory';
+import { PkVisualizer } from './components/PkVisualizer';
+import { ClinicalConceptsGuide } from './components/ClinicalConceptsGuide';
+import { AminoglycosideCalculator } from './components/AminoglycosideCalculator';
 
 export default function App() {
   // Active Drug Selector
