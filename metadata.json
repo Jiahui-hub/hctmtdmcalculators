@@ -1,6 +1,6 @@
 {
   "name": "HCTM TDM Calculators",
-  "description": "Clinical Therapeutic Drug Monitoring (TDM) and dosing calculators for Vancomycin, Bactrim, and Fluconazole with renal/HD support for Hospital Canselor Tuanku Muhriz (HCTM).",
+  "description": "Clinical Therapeutic Drug Monitoring (TDM) and dosing calculators for Vancomycin, Gentamicin, Amikacin, Bactrim, and Fluconazole with renal/HD support for Hospital Canselor Tuanku Muhriz (HCTM).",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
