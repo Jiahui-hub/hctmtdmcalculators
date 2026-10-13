@@ -38,6 +38,7 @@ import {
   calculateVancoLoadingDose, 
   calculateVancoMaintenance, 
   adjustVancoDose, 
+  adjustVancoHD,
   calculateBactrimDose,
   getDosingWeight,
   getVancoAdminDetails,
@@ -59,6 +60,7 @@ import { DrugDirectory, DrugId } from './components/DrugDirectory';
 import { PkVisualizer } from './components/PkVisualizer';
 import { ClinicalConceptsGuide } from './components/ClinicalConceptsGuide';
 import { AminoglycosideCalculator } from './components/AminoglycosideCalculator';
+import { DigoxinCalculator } from './components/DigoxinCalculator';
 
 export default function App() {
   // Active Drug Selector
@@ -178,8 +180,15 @@ export default function App() {
     return res;
   }, [vancoMaintenanceAuto, vancoManualInterval, selectedVancoDoseOverride]);
   
-  const vancoAdmin = useMemo(() => getVancoAdminDetails(vancoMaintenance.dose, isVancoHD), [vancoMaintenance.dose, isVancoHD]);
-  const vancoLoadingAdmin = useMemo(() => getVancoAdminDetails(vancoLoading.dose, isVancoHD), [vancoLoading.dose, isVancoHD]);
+  const vancoAdmin = useMemo(() => getVancoAdminDetails(vancoMaintenance.dose, isVancoHD, false), [vancoMaintenance.dose, isVancoHD]);
+  const vancoLoadingAdmin = useMemo(() => getVancoAdminDetails(vancoLoading.dose, isVancoHD, true), [vancoLoading.dose, isVancoHD]);
+
+  // Vancomycin HD Dose Adjustment
+  const vancoHdAdjustment = useMemo(() => {
+    const level = parseFloat(measuredVancoLevel);
+    if (!level || isNaN(level)) return null;
+    return adjustVancoHD(parseFloat(currentVancoDose) || 1000, level);
+  }, [measuredVancoLevel, currentVancoDose]);
 
   // PK Calculations
   const popPK = useMemo(() => calculateVancoPopPK(patientData.weight, crcl, parseFloat(vancoVdCoeff) || 0.7, isAnuric || isVancoHD), [patientData.weight, crcl, vancoVdCoeff, isAnuric, isVancoHD]);
@@ -234,7 +243,7 @@ export default function App() {
     );
   }, [measuredVancoLevel, currentVancoDose, currentVancoInterval, vancoTargetMidpoint]);
 
-  const vancoAdjustedAdmin = useMemo(() => vancoAdjustment ? getVancoAdminDetails(vancoAdjustment.dose, isVancoHD) : null, [vancoAdjustment, isVancoHD]);
+  const vancoAdjustedAdmin = useMemo(() => vancoAdjustment ? getVancoAdminDetails(vancoAdjustment.dose, isVancoHD, false) : null, [vancoAdjustment, isVancoHD]);
 
   // Bactrim Results
   const bactrimResult = useMemo(() => calculateBactrimDose(patientData.weight, crcl, bactrimIndication, isBactrimDialysis), [patientData.weight, crcl, bactrimIndication, isBactrimDialysis]);
@@ -672,6 +681,26 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {activeDrug === 'digoxin' && (
+                  <div className="space-y-2 text-slate-600">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Drug:</span>
+                      <span className="font-black text-slate-900">Digoxin (Oral / IV)</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Target Range:</span>
+                      <span className="font-black text-amber-600">CHF: 0.5–0.9 | AF: 0.8–2.0 mcg/L</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Sampling:</span>
+                      <span className="font-black text-slate-700">Pre-dose or ≥6h oral / ≥4h IV</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Toxicity Alert:</span>
+                      <span className="font-black text-rose-600">&gt; 2.0 mcg/L (DigiFab guide)</span>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -682,9 +711,7 @@ export default function App() {
             <DrugDirectory 
               activeDrug={activeDrug} 
               onSelectDrug={(id) => {
-                if (id === 'vanco' || id === 'gentamicin' || id === 'amikacin' || id === 'bactrim' || id === 'fluco') {
-                  setActiveDrug(id);
-                }
+                setActiveDrug(id);
               }} 
             />
 
@@ -734,10 +761,13 @@ export default function App() {
                       <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 py-4">
                         {/* 1. Loading Dose */}
                         <div className="space-y-1.5">
-                          <Label className="text-xs font-bold text-slate-700">Loading Dose</Label>
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs font-bold text-slate-700">Loading Dose (mg/kg)</Label>
+                            <span className="text-[10px] text-blue-600 font-black">{vancoLoadingMgKg} mg/kg</span>
+                          </div>
                           <Select value={vancoLoadingMgKg} onValueChange={setVancoLoadingMgKg}>
                             <SelectTrigger className="h-9 text-xs font-bold border-slate-200">
-                              <SelectValue />
+                              <SelectValue placeholder={`${vancoLoadingMgKg} mg/kg`} />
                             </SelectTrigger>
                             <SelectContent className="w-[320px]">
                               <SelectItem value="20">20 mg/kg (Mild / Renal concern)</SelectItem>
@@ -750,10 +780,13 @@ export default function App() {
 
                         {/* 2. Maintenance Dose Target */}
                         <div className="space-y-1.5">
-                          <Label className="text-xs font-bold text-slate-700">Maintenance Intensity</Label>
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs font-bold text-slate-700">Maintenance Dose (mg/kg)</Label>
+                            <span className="text-[10px] text-indigo-600 font-black">{vancoMaintenanceMgKg} mg/kg/dose</span>
+                          </div>
                           <Select value={vancoMaintenanceMgKg} onValueChange={setVancoMaintenanceMgKg}>
                             <SelectTrigger className="h-9 text-xs font-bold border-slate-200">
-                              <SelectValue />
+                              <SelectValue placeholder={`${vancoMaintenanceMgKg} mg/kg / dose`} />
                             </SelectTrigger>
                             <SelectContent className="w-[320px]">
                               <SelectItem value="10">10 mg/kg / dose</SelectItem>
@@ -782,15 +815,15 @@ export default function App() {
                           </Select>
                         </div>
 
-                        {/* 4. Volume of Distribution (Vd) */}
+                        {/* 4. Volume of Distribution (Vd) - Shows L/kg without expanding dropdown */}
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between">
                             <Label className="text-xs font-bold text-slate-700">Volume of Distribution (Vd)</Label>
                             <span className="text-[10px] text-blue-600 font-bold">{(parseFloat(vancoVdCoeff) * patientData.weight).toFixed(1)} L</span>
                           </div>
                           <Select value={vancoVdCoeff} onValueChange={setVancoVdCoeff}>
-                            <SelectTrigger className="h-9 text-xs font-bold border-slate-200">
-                              <SelectValue />
+                            <SelectTrigger className="h-9 text-xs font-bold border-slate-200 flex justify-between">
+                              <span className="truncate">{vancoVdCoeff} L/kg ({(parseFloat(vancoVdCoeff) * patientData.weight).toFixed(1)} L total)</span>
                             </SelectTrigger>
                             <SelectContent className="w-[360px]">
                               <SelectItem value="0.5">0.5 L/kg (Dehydrated / Frail / Elderly)</SelectItem>
@@ -814,7 +847,7 @@ export default function App() {
                           </Select>
                         </div>
 
-                        {/* 6. Infusion Duration (Including 4h/6h Extended Infusions) */}
+                        {/* 6. Infusion Duration */}
                         <div className="space-y-1.5">
                           <Label className="text-xs font-bold text-slate-700">Infusion Duration</Label>
                           <Select value={vancoInfusionTime} onValueChange={setVancoInfusionTime}>
@@ -841,16 +874,23 @@ export default function App() {
                       <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-sm space-y-3">
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-black uppercase text-blue-600 tracking-wider">Loading Dose</span>
-                          <Badge className="bg-blue-50 text-blue-700 border-blue-200 text-[10px] font-black">
-                            {vancoLoadingMgKg} mg/kg
-                          </Badge>
+                          <div className="flex items-center gap-1.5">
+                            <Badge className="bg-blue-50 text-blue-700 border-blue-200 text-[10px] font-black">
+                              {vancoLoadingMgKg} mg/kg
+                            </Badge>
+                            {vancoLoading.isCapped && (
+                              <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] font-bold">
+                                Capped at 2g
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                         <div>
                           <p className="text-3xl sm:text-4xl font-black text-slate-900">
                             {vancoLoading.dose} <span className="text-sm font-bold text-slate-500">mg</span>
                           </p>
                           <p className="text-[11px] text-slate-500 font-bold mt-0.5">
-                            Given once as first dose • Max cap 3000mg
+                            Given once as first dose • Single dose capped at 2g (2000 mg)
                           </p>
                         </div>
                         <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 font-medium">
@@ -863,20 +903,20 @@ export default function App() {
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-black uppercase text-indigo-600 tracking-wider">Maintenance Regimen</span>
                           <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200 text-[10px] font-black">
-                            {isAnuric ? 'Anuric (PRN)' : `q${vancoMaintenance.interval}h`}
+                            {isAnuric || isVancoHD ? 'HD / Anuric (PRN)' : `q${vancoMaintenance.interval}h`}
                           </Badge>
                         </div>
                         <div>
                           <p className="text-3xl sm:text-4xl font-black text-slate-900">
                             {vancoMaintenance.dose} <span className="text-sm font-bold text-slate-500">mg</span>{' '}
                             <span className="text-xl font-bold text-indigo-600">
-                              {isAnuric ? 'PRN only' : `q${vancoMaintenance.interval}h`}
+                              {isAnuric || isVancoHD ? 'Post-HD' : `q${vancoMaintenance.interval}h`}
                             </span>
                           </p>
                           <p className="text-[11px] text-slate-500 font-bold mt-0.5">
-                            {isAnuric 
-                              ? 'Do not repeat daily. Re-dose when level < 10-15 mg/L' 
-                              : `Target range: ${(patientData.weight * 15).toFixed(0)}–${(patientData.weight * 20).toFixed(0)} mg/dose (15–20 mg/kg) • Total: ${(vancoMaintenance.dose * (24 / (vancoMaintenance.interval || 24))).toFixed(0)} mg/day`}
+                            {isAnuric || isVancoHD 
+                              ? 'Administer post-HD on dialysis days • Single dose capped at 2g (2000 mg)' 
+                              : `Target range: ${(patientData.weight * 15).toFixed(0)}–${Math.min(2000, patientData.weight * 20).toFixed(0)} mg/dose (15–20 mg/kg) • Capped at 2g • Total: ${(vancoMaintenance.dose * (24 / (vancoMaintenance.interval || 24))).toFixed(0)} mg/day`}
                           </p>
                         </div>
                         <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 font-medium flex items-center justify-between">
@@ -884,11 +924,43 @@ export default function App() {
                           {selectedVancoDoseOverride !== null && (
                             <button
                               onClick={() => setSelectedVancoDoseOverride(null)}
-                              className="text-[10px] font-bold text-blue-600 hover:underline"
+                              className="text-[10px] font-bold text-blue-600 hover:underline shrink-0 ml-2"
                             >
-                              Reset to Auto
+                              Reset
                             </button>
                           )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dilution Reminder & Safety Protocol Callout */}
+                    <div className="p-4 bg-amber-50/70 border border-amber-200/90 rounded-2xl space-y-2">
+                      <div className="flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span className="text-xs font-black uppercase tracking-wider text-amber-900">
+                          Vancomycin Dilution & Line Safety Reminder
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                        <div className="p-2.5 bg-white/80 rounded-xl border border-amber-200/60 space-y-0.5">
+                          <span className="text-[10px] font-black uppercase text-amber-800 block">Peripheral Line</span>
+                          <p className="font-bold text-slate-800">5 mg/mL maximum</p>
+                          <p className="text-[11px] text-slate-500">Standard concentration (e.g. 1000 mg in 200–250 mL NS) to minimize phlebitis.</p>
+                        </div>
+                        <div className="p-2.5 bg-white/80 rounded-xl border border-amber-200/60 space-y-0.5">
+                          <span className="text-[10px] font-black uppercase text-amber-800 block">Central Line</span>
+                          <p className="font-bold text-slate-800">Up to 10 mg/mL</p>
+                          <p className="text-[11px] text-slate-500">Reserved for central venous access in fluid-restricted / ICU patients.</p>
+                        </div>
+                        <div className="p-2.5 bg-white/80 rounded-xl border border-amber-200/60 space-y-0.5">
+                          <span className="text-[10px] font-black uppercase text-blue-800 block">Loading Dose Rule</span>
+                          <p className="font-bold text-slate-800">1g – 2g in 400 mL NS</p>
+                          <p className="text-[11px] text-slate-500">Infuse over 3–4 hours (≤ 10 mg/min) to avoid Red Man syndrome.</p>
+                        </div>
+                        <div className="p-2.5 bg-white/80 rounded-xl border border-amber-200/60 space-y-0.5">
+                          <span className="text-[10px] font-black uppercase text-purple-800 block">Hemodialysis (HD) Rule</span>
+                          <p className="font-bold text-slate-800">≤ 1g in 100 mL NS</p>
+                          <p className="text-[11px] text-slate-500">Start on last hour of HD. If &gt; 1g, dilute in 200 mL NS & continue 1h post-HD.</p>
                         </div>
                       </div>
                     </div>
@@ -1080,32 +1152,97 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Adjustment Result Banner */}
-                          <AnimatePresence>
-                            {vancoAdjustment && vancoAdjustedAdmin && (
-                              <motion.div 
-                                initial={{ opacity: 0, scale: 0.95 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                className="p-4 bg-purple-50/80 rounded-xl border border-purple-200 space-y-2"
-                              >
-                                <div className="flex justify-between items-center">
-                                  <div>
-                                    <p className="text-[10px] text-purple-700 font-black uppercase tracking-wider">New Recommended Dose</p>
-                                    <p className="text-3xl font-black text-purple-950">
-                                      {vancoAdjustment.dose} <span className="text-sm font-bold">mg</span>{' '}
-                                      <span className="text-xl font-bold opacity-75">q{vancoAdjustment.interval}h</span>
+                          {/* Hemodialysis Mode Indicator / Toggle */}
+                          <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                            <div className="space-y-0.5">
+                              <Label className="text-xs font-bold text-slate-800">Hemodialysis (HD) Mode</Label>
+                              <p className="text-[10px] text-slate-500">Apply HD-specific dose adjustment rules</p>
+                            </div>
+                            <Switch checked={isVancoHD} onCheckedChange={setIsVancoHD} />
+                          </div>
+
+                          {/* HD-Specific Adjustment Result Banner */}
+                          {isVancoHD && vancoHdAdjustment && (
+                            <div className={`p-4 rounded-xl border space-y-2 ${
+                              vancoHdAdjustment.action === 'withhold' 
+                                ? 'bg-red-50/90 border-red-300 text-red-950'
+                                : vancoHdAdjustment.action === 'reduce'
+                                ? 'bg-amber-50/90 border-amber-300 text-amber-950'
+                                : vancoHdAdjustment.action === 'increase'
+                                ? 'bg-blue-50/90 border-blue-300 text-blue-950'
+                                : 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
+                            }`}>
+                              <div className="flex justify-between items-center">
+                                <div>
+                                  <p className="text-[10px] font-black uppercase tracking-wider">
+                                    HD TDM Action: {vancoHdAdjustment.action.toUpperCase()}
+                                  </p>
+                                  {vancoHdAdjustment.action === 'withhold' ? (
+                                    <p className="text-2xl font-black text-red-600">
+                                      WITHHOLD VANCO
                                     </p>
+                                  ) : (
+                                    <p className="text-3xl font-black">
+                                      {vancoHdAdjustment.recommendedDose} <span className="text-sm font-bold">mg</span>{' '}
+                                      <span className="text-sm font-bold opacity-80">Post-HD</span>
+                                    </p>
+                                  )}
+                                </div>
+                                <Badge className={`text-[10px] font-black border-none ${
+                                  vancoHdAdjustment.action === 'withhold' ? 'bg-red-600 text-white' :
+                                  vancoHdAdjustment.action === 'reduce' ? 'bg-amber-600 text-white' :
+                                  vancoHdAdjustment.action === 'increase' ? 'bg-blue-600 text-white' :
+                                  'bg-emerald-600 text-white'
+                                }`}>
+                                  {vancoHdAdjustment.action === 'withhold' ? '> 24.65 mg/L' :
+                                   vancoHdAdjustment.action === 'reduce' ? '> 20 mg/L' :
+                                   vancoHdAdjustment.action === 'increase' ? '< 10 mg/L' : '10 – 20 mg/L Target'}
+                                </Badge>
+                              </div>
+                              <p className="text-xs font-medium">
+                                {vancoHdAdjustment.reason}
+                              </p>
+                              {vancoHdAdjustment.doseRange.min !== vancoHdAdjustment.doseRange.max && (
+                                <p className="text-[11px] font-bold opacity-90">
+                                  Dose Range (25%–50% adjustment): {vancoHdAdjustment.doseRange.min} – {vancoHdAdjustment.doseRange.max} mg
+                                </p>
+                              )}
+                              <div className="pt-2 border-t border-current/20 text-xs font-bold">
+                                {vancoHdAdjustment.recommendedDose > 0 && (
+                                  <span>Dilution: {vancoHdAdjustment.recommendedDose <= 1000 ? 'Dilute in 100 mL NS (start on last hour of HD)' : 'Dilute in 200 mL NS (start on last hour of HD & continue 1h post-HD)'}</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Standard Non-HD Adjustment Result Banner */}
+                          {!isVancoHD && (
+                            <AnimatePresence>
+                              {vancoAdjustment && vancoAdjustedAdmin && (
+                                <motion.div 
+                                  initial={{ opacity: 0, scale: 0.95 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  className="p-4 bg-purple-50/80 rounded-xl border border-purple-200 space-y-2"
+                                >
+                                  <div className="flex justify-between items-center">
+                                    <div>
+                                      <p className="text-[10px] text-purple-700 font-black uppercase tracking-wider">New Recommended Dose</p>
+                                      <p className="text-3xl font-black text-purple-950">
+                                        {vancoAdjustment.dose} <span className="text-sm font-bold">mg</span>{' '}
+                                        <span className="text-xl font-bold opacity-75">q{vancoAdjustment.interval}h</span>
+                                      </p>
+                                    </div>
+                                    <Badge className="bg-purple-600 text-white text-[10px] font-black border-none">
+                                      Target Midpoint: {vancoTargetMidpoint} mg/L
+                                    </Badge>
                                   </div>
-                                  <Badge className="bg-purple-600 text-white text-[10px] font-black border-none">
-                                    Target Midpoint: {vancoTargetMidpoint} mg/L
-                                  </Badge>
-                                </div>
-                                <div className="pt-2 border-t border-purple-200 text-xs text-purple-900 font-bold">
-                                  Dilute in {vancoAdjustedAdmin.diluent}, infuse over {vancoAdjustedAdmin.time}
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
+                                  <div className="pt-2 border-t border-purple-200 text-xs text-purple-900 font-bold">
+                                    Dilute in {vancoAdjustedAdmin.diluent}, infuse over {vancoAdjustedAdmin.time}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          )}
                         </CardContent>
                       </Card>
 
@@ -1263,6 +1400,7 @@ export default function App() {
                   ibw,
                   bmi: patientData.height > 0 ? patientData.weight / Math.pow(patientData.height / 100, 2) : 0
                 }}
+                isHD={isVancoHD}
               />
             )}
 
@@ -1673,6 +1811,23 @@ export default function App() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+
+            {/* DIGOXIN MODULE */}
+            {activeDrug === 'digoxin' && (
+              <DigoxinCalculator
+                patient={{
+                  age: patientData.age,
+                  weight: patientData.weight,
+                  height: patientData.height,
+                  sex: patientData.sex,
+                  scr: patientData.scr,
+                  crcl: crcl,
+                  ibw: ibw,
+                  bmi: patientData.height > 0 ? patientData.weight / Math.pow(patientData.height / 100, 2) : 0
+                }}
+                isHD={isVancoHD}
+              />
             )}
           </div>
         </div>

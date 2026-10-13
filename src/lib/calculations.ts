@@ -1484,3 +1484,550 @@ export function vancoMgLToUmolL(mgL: number): number {
 export function vancoUmolLToMgL(umolL: number): number {
   return umolL / VANCO_CONVERSION_FACTOR;
 }
+
+// ==========================================
+// DIGOXIN PHARMACOKINETICS & DOSING MODELS
+// ==========================================
+
+export type DigoxinIndication = 'chf' | 'af';
+export type DigoxinDosageForm = 'tablet' | 'injection' | 'elixir' | 'capsule';
+export type DigoxinThyroidStatus = 'euthyroid' | 'hypothyroid' | 'hyperthyroid';
+export type DigoxinInteractingDrug = 'none' | 'amiodarone' | 'quinidine' | 'verapamil';
+export type DigoxinRenalStage = 'normal' | 'moderate' | 'esrf_hd';
+
+export interface DigoxinPatientParams {
+  weight: number; // kg (BW)
+  crcl: number; // mL/min
+  indication: DigoxinIndication; // 'chf' (target 0.5-0.9 mcg/L) | 'af' (target 0.8-2.0 mcg/L)
+  dosageForm: DigoxinDosageForm;
+  thyroid: DigoxinThyroidStatus;
+  interactingDrug: DigoxinInteractingDrug;
+  targetCss?: number; // mcg/L
+  isESRF?: boolean;
+  isCAVH_CVVH?: boolean;
+}
+
+export interface DigoxinInitialResult {
+  crcl: number;
+  weight: number;
+  indication: DigoxinIndication;
+  targetCss: number;
+  targetCssRange: string;
+  dosageForm: DigoxinDosageForm;
+  bioavailabilityF: number;
+  saltFactorS: number;
+  
+  // PK parameters
+  baselineClLhr: number; // raw formula CL before thyroid / drug interactions
+  finalClLhr: number; // adjusted CL (L/hr)
+  clLhr: number; // alias for DigoxinCalculator
+  finalClLday: number; // adjusted CL (L/day)
+  clLday: number; // alias for DigoxinCalculator
+  
+  baselineVdL: number; // formula Vd: (3.8 * BW) + (3.1 * CrCl)
+  finalVdL: number; // after thyroid/quinidine factor
+  vdL: number; // alias for DigoxinCalculator
+  vdLkg: number;
+  vdLPerKg: number; // alias for DigoxinCalculator
+  halfLifeHours: number;
+  ke: number; // 1/hr
+  keHr: number; // alias for DigoxinCalculator
+
+  // Interaction multipliers applied
+  clMultiplier: number;
+  vdMultiplier: number;
+  clFactorsList: string[];
+  vdFactorsList: string[];
+
+  // Loading Dose (Total Digitalising Dose - TDD)
+  loadingDoseMcgExact: number;
+  loadingDoseMgExact: number;
+  recommendedTddMg: number;
+  loadingDoseMgStandard: number; // alias for DigoxinCalculator
+  tddRangeMg: string;
+  standardTddRange: string; // alias for DigoxinCalculator
+  loadingDoseAdministration: string; // oral vs IV fractioning guidance
+  loadingSplitGuideline: string; // alias for DigoxinCalculator
+  loadingDoseRenalAdjustment: string;
+  loadingDoseNote: string; // alias for DigoxinCalculator
+
+  // Maintenance Dose (Daily)
+  dailyMaintMcgExact: number;
+  dailyMaintMgExact: number;
+  maintenanceDoseMcgExact: number; // alias for DigoxinCalculator
+  maintenanceDoseMgExact: number; // alias for DigoxinCalculator
+  recommendedMaintMg: number;
+  maintenanceDoseMgStandard: number; // alias for DigoxinCalculator
+  recommendedMaintMcg: number;
+  standardIntervalHours: number;
+  recommendedIntervalHours: number; // alias for DigoxinCalculator
+  maintenanceRangeMg: string;
+  standardDailyRange: string; // alias for DigoxinCalculator
+  maintenanceRenalAdjustment: string;
+  maintenanceDoseNote: string; // alias for DigoxinCalculator
+  daysToSteadyState: string;
+
+  // Sampling guidance
+  samplingWithLoading: string;
+  samplingWithLD: string; // alias for DigoxinCalculator
+  samplingWithoutLoading: string;
+  samplingWithoutLD: string; // alias for DigoxinCalculator
+  samplingMaintenance: string;
+  samplingEsrf: string;
+  timingOral: string;
+  timingIV: string;
+}
+
+export function getDigoxinBioavailability(dosageForm: DigoxinDosageForm): number {
+  switch (dosageForm) {
+    case 'tablet':
+      return 0.7;
+    case 'elixir':
+      return 0.75;
+    case 'injection':
+    case 'capsule':
+      return 1.0;
+    default:
+      return 0.7;
+  }
+}
+
+/**
+ * Calculate Digoxin Clearance (L/hr)
+ * Patient without CHF = [(0.8 × BW) + CrCL] × 0.06
+ * Patient with CHF = [(0.33 × BW) + (0.9 × CrCL)] × 0.06
+ */
+export function calculateDigoxinClearanceFormula(weight: number, crcl: number, hasCHF: boolean): number {
+  const safeBW = Math.max(10, weight || 60);
+  const safeCrCl = Math.max(0, crcl || 0);
+  if (hasCHF) {
+    return ((0.33 * safeBW) + (0.9 * safeCrCl)) * 0.06;
+  }
+  return ((0.8 * safeBW) + safeCrCl) * 0.06;
+}
+
+/**
+ * Calculate Digoxin Vd formula:
+ * Vd (L) = (3.8 × BW) + (3.1 × CrCL)
+ */
+export function calculateDigoxinVdFormula(weight: number, crcl: number): number {
+  const safeBW = Math.max(10, weight || 60);
+  const safeCrCl = Math.max(0, crcl || 0);
+  return (3.8 * safeBW) + (3.1 * safeCrCl);
+}
+
+/**
+ * Full Digoxin Initial Dosing & PK Calculation
+ */
+export function calculateDigoxinInitialDosing(params: DigoxinPatientParams): DigoxinInitialResult {
+  const {
+    weight = 60,
+    crcl = 60,
+    indication = 'chf',
+    dosageForm = 'tablet',
+    thyroid = 'euthyroid',
+    interactingDrug = 'none',
+    isESRF = (crcl || 0) < 10,
+    isCAVH_CVVH = false
+  } = params;
+
+  const safeWeight = Math.max(10, Number(weight) || 60);
+  const safeCrCl = Math.max(0, Number(crcl) || 0);
+  const hasCHF = indication === 'chf';
+  const targetCss = Number(params.targetCss) || (hasCHF ? 0.7 : 1.2);
+  const targetCssRange = hasCHF ? '0.5 – 0.9 mcg/L (HF)' : '0.8 – 2.0 mcg/L (AF)';
+  
+  const F = getDigoxinBioavailability(dosageForm);
+  const S = 1.0; // Digoxin salt factor = 1.0
+
+  // 1. BASELINE FORMULA PK
+  const baselineClLhr = Math.max(0.2, calculateDigoxinClearanceFormula(safeWeight, safeCrCl, hasCHF));
+  const baselineVdL = Math.max(50, calculateDigoxinVdFormula(safeWeight, safeCrCl));
+
+  // 2. INTERACTION & THYROID MULTIPLIERS
+  let vdMultiplier = 1.0;
+  const vdFactorsList: string[] = [];
+
+  if (interactingDrug === 'quinidine') {
+    vdMultiplier *= 0.7;
+    vdFactorsList.push('Quinidine (×0.7 Vd)');
+  }
+  if (thyroid === 'hypothyroid') {
+    vdMultiplier *= 0.7;
+    vdFactorsList.push('Hypothyroidism (×0.7 Vd)');
+  } else if (thyroid === 'hyperthyroid') {
+    vdMultiplier *= 1.3;
+    vdFactorsList.push('Hyperthyroidism (×1.3 Vd)');
+  }
+
+  let clMultiplier = 1.0;
+  const clFactorsList: string[] = [];
+
+  if (interactingDrug === 'amiodarone') {
+    clMultiplier *= 0.5;
+    clFactorsList.push('Amiodarone (×0.5 CL, ~50% dose reduction)');
+  } else if (interactingDrug === 'quinidine') {
+    clMultiplier *= 0.5;
+    clFactorsList.push('Quinidine (×0.5 CL, ~50% dose reduction)');
+  } else if (interactingDrug === 'verapamil') {
+    clMultiplier *= 0.75;
+    clFactorsList.push('Verapamil (×0.75 CL, ~25% dose reduction)');
+  }
+
+  if (thyroid === 'hypothyroid') {
+    clMultiplier *= 0.7;
+    clFactorsList.push('Hypothyroidism (×0.7 CL)');
+  } else if (thyroid === 'hyperthyroid') {
+    clMultiplier *= 1.3;
+    clFactorsList.push('Hyperthyroidism (×1.3 CL)');
+  }
+
+  const finalClLhr = Number((baselineClLhr * clMultiplier).toFixed(3));
+  const finalClLday = Number((finalClLhr * 24).toFixed(2));
+  const finalVdL = Number((baselineVdL * vdMultiplier).toFixed(2));
+  const vdLkg = Number((safeWeight > 0 ? finalVdL / safeWeight : 0).toFixed(2));
+
+  const ke = Number((finalVdL > 0 ? finalClLhr / finalVdL : 0.02).toFixed(4));
+  const halfLifeHours = Number((ke > 0 ? Math.log(2) / ke : 36).toFixed(1));
+
+  // 3. LOADING DOSE (LD / Total Digitalising Dose - TDD)
+  // LD (mcg) = [Vd(L) × Css target (mcg/L)] / (S × F)
+  const loadingDoseMcgExact = Number(((finalVdL * targetCss) / (S * F)).toFixed(1));
+  const loadingDoseMgExact = Number((loadingDoseMcgExact / 1000).toFixed(4));
+
+  const isOral = dosageForm === 'tablet' || dosageForm === 'elixir';
+  const tddRangeMg = isOral ? '0.75 – 1.5 mg (Oral TDD)' : '0.5 – 1.0 mg (IV/IM TDD)';
+
+  // Loading Dose Renal Adjustment:
+  let adjustedLoadingMcg = loadingDoseMcgExact;
+  let loadingDoseRenalAdjustment = 'Normal loading dose (CrCl ≥ 50 mL/min).';
+
+  if (safeCrCl >= 10 && safeCrCl <= 50) {
+    loadingDoseRenalAdjustment = 'CrCl 10–50 mL/min: No loading dose adjustment required (full TDD).';
+  } else if (safeCrCl < 10 || isESRF) {
+    adjustedLoadingMcg = loadingDoseMcgExact * 0.5;
+    loadingDoseRenalAdjustment = 'Severe Renal Impairment / ESRF (< 10 mL/min or Dialysis): Reduce Loading Dose to 50% of calculated TDD.';
+  }
+
+  const adjustedLoadingMg = adjustedLoadingMcg / 1000;
+  let recommendedTddMg = Math.round(adjustedLoadingMg * 8) / 8; // round to nearest 0.125 mg
+  if (recommendedTddMg < 0.25) recommendedTddMg = 0.25;
+  if (isOral && recommendedTddMg > 1.5) recommendedTddMg = 1.5;
+  if (!isOral && recommendedTddMg > 1.0) recommendedTddMg = 1.0;
+
+  const loadingDoseAdministration = isOral
+    ? `Divide Total Digitalising Dose: Give 50% initially (${(recommendedTddMg * 0.5).toFixed(3)} mg), followed by 25% (${(recommendedTddMg * 0.25).toFixed(3)} mg) at 6–8 hour intervals for 2 doses, with clinical and ECG monitoring.`
+    : `Divide IV Loading Dose: Administer 50% (${(recommendedTddMg * 0.5).toFixed(2)} mg) slowly over 10–20 minutes, followed by 25% (${(recommendedTddMg * 0.25).toFixed(2)} mg) every 4–8 hours as needed.`;
+
+  // 4. MAINTENANCE DOSE (MD)
+  // MD (mcg/day) = [CL (L/day) × Css target (mcg/L) × Interval (day)] / (S × F)
+  const intervalDay = 1;
+  const dailyMaintMcgExact = Number(((finalClLday * targetCss * intervalDay) / (S * F)).toFixed(1));
+  const dailyMaintMgExact = Number((dailyMaintMcgExact / 1000).toFixed(4));
+
+  const maintenanceRangeMg = isOral ? '0.125 – 0.5 mg daily' : '0.1 – 0.4 mg daily';
+
+  let standardIntervalHours = 24;
+  let renalMaintFactor = 1.0;
+  let maintenanceRenalAdjustment = 'CrCl > 50 mL/min: Normal daily maintenance dose (q24h).';
+
+  if (safeCrCl < 10 || isESRF) {
+    renalMaintFactor = 0.25;
+    standardIntervalHours = 48;
+    maintenanceRenalAdjustment = 'CrCl < 10 mL/min, Hemodialysis, PD, High-Flux: Reduce to 10–25% of normal dose OR extend dosing interval to 48 hours (e.g. 0.0625–0.125 mg alternate day / 3 times a week).';
+  } else if ((safeCrCl >= 10 && safeCrCl <= 50) || isCAVH_CVVH) {
+    renalMaintFactor = 0.5;
+    maintenanceRenalAdjustment = 'CrCl 10–50 mL/min or CAVH / CVVHD: Reduce to 25–75% of normal dose OR extend dosing interval to 36 hours (e.g. 0.125 mg daily or alternate days).';
+  }
+
+  const adjustedMaintMg = dailyMaintMgExact * (standardIntervalHours === 48 ? 1 : renalMaintFactor);
+  
+  let recommendedMaintMg = 0.125;
+  if (adjustedMaintMg < 0.09) {
+    recommendedMaintMg = 0.0625;
+  } else if (adjustedMaintMg < 0.18) {
+    recommendedMaintMg = 0.125;
+  } else if (adjustedMaintMg < 0.3) {
+    recommendedMaintMg = 0.25;
+  } else if (adjustedMaintMg < 0.4) {
+    recommendedMaintMg = 0.375;
+  } else {
+    recommendedMaintMg = 0.5;
+  }
+
+  if (!isOral) {
+    if (adjustedMaintMg <= 0.15) recommendedMaintMg = 0.1;
+    else if (adjustedMaintMg <= 0.25) recommendedMaintMg = 0.2;
+    else if (adjustedMaintMg <= 0.35) recommendedMaintMg = 0.3;
+    else recommendedMaintMg = 0.4;
+  }
+
+  const recommendedMaintMcg = recommendedMaintMg * 1000;
+
+  const daysToSteadyState = (safeCrCl < 10 || isESRF)
+    ? '15 – 20 days (prolonged half-life up to ~80–120 hours in ESRF)'
+    : '5 – 7 days (~4 to 5 elimination half-lives)';
+
+  const samplingWithLoading = '12 – 24 hours after loading dose, and AT LEAST 6 hours after the last dose.';
+  const samplingWithoutLoading = '3 – 5 days after starting maintenance therapy.';
+  const samplingMaintenance = 'Wait until steady state: 5 – 7 days after dose adjustment (15 – 20 days in ESRF).';
+  const samplingEsrf = '15 – 20 days in ESRF / hemodialysis patients.';
+  const timingOral = '30 minutes prior or immediately before next scheduled oral dose. If dose already taken, WAIT AT LEAST 6 hours post-dose (to allow tissue distribution phase).';
+  const timingIV = '30 minutes prior or immediately before next IV dose. If dose already taken, WAIT AT LEAST 4 hours post-dose (tissue distribution completion).';
+
+  return {
+    crcl: safeCrCl,
+    weight: safeWeight,
+    indication,
+    targetCss,
+    targetCssRange,
+    dosageForm,
+    bioavailabilityF: F,
+    saltFactorS: S,
+    baselineClLhr,
+    finalClLhr,
+    clLhr: finalClLhr,
+    finalClLday,
+    clLday: finalClLday,
+    baselineVdL,
+    finalVdL,
+    vdL: finalVdL,
+    vdLkg,
+    vdLPerKg: vdLkg,
+    halfLifeHours,
+    ke,
+    keHr: ke,
+    clMultiplier,
+    vdMultiplier,
+    clFactorsList,
+    vdFactorsList,
+    loadingDoseMcgExact,
+    loadingDoseMgExact,
+    recommendedTddMg,
+    loadingDoseMgStandard: recommendedTddMg,
+    tddRangeMg,
+    standardTddRange: tddRangeMg,
+    loadingDoseAdministration,
+    loadingSplitGuideline: loadingDoseAdministration,
+    loadingDoseRenalAdjustment,
+    loadingDoseNote: loadingDoseRenalAdjustment,
+    dailyMaintMcgExact,
+    dailyMaintMgExact,
+    maintenanceDoseMcgExact: dailyMaintMcgExact,
+    maintenanceDoseMgExact: dailyMaintMgExact,
+    recommendedMaintMg,
+    maintenanceDoseMgStandard: recommendedMaintMg,
+    recommendedMaintMcg,
+    standardIntervalHours,
+    recommendedIntervalHours: standardIntervalHours,
+    maintenanceRangeMg,
+    standardDailyRange: maintenanceRangeMg,
+    maintenanceRenalAdjustment,
+    maintenanceDoseNote: maintenanceRenalAdjustment,
+    daysToSteadyState,
+    samplingWithLoading,
+    samplingWithLD: samplingWithLoading,
+    samplingWithoutLoading,
+    samplingWithoutLD: samplingWithoutLoading,
+    samplingMaintenance,
+    samplingEsrf,
+    timingOral,
+    timingIV
+  };
+}
+
+/**
+ * Digoxin TDM Dose Adjustment Formula
+ * CL (L/H) = Dose × F / [digoxin level × tau]
+ * where:
+ *   Dose in mcg
+ *   digoxin level in mcg/L
+ *   tau in hours
+ * Then for new dose calculation:
+ *   MD (mcg) = [CL (L/day) × Css target (mcg/L) × Interval (day)] / [S × F]
+ */
+export function adjustDigoxinDose(params: {
+  currentDoseMg: number;
+  currentIntervalHours: number;
+  measuredLevelMcgL: number;
+  targetLevelMcgL: number;
+  dosageForm: DigoxinDosageForm;
+  targetIntervalHours?: number;
+}): {
+  calculatedClLhr: number;
+  calculatedClLday: number;
+  newMaintDoseMcgExact: number;
+  newMaintDoseMgExact: number;
+  recommendedNewDoseMg: number;
+  recommendedNewIntervalHours: number;
+  note: string;
+} {
+  const {
+    currentDoseMg,
+    currentIntervalHours,
+    measuredLevelMcgL,
+    targetLevelMcgL,
+    dosageForm,
+    targetIntervalHours = currentIntervalHours
+  } = params;
+
+  const F = getDigoxinBioavailability(dosageForm);
+  const S = 1.0;
+  const currentDoseMcg = currentDoseMg * 1000;
+
+  // CL (L/H) = Dose × F / [digoxin level × tau]
+  // protect against division by zero
+  const safeLevel = Math.max(0.1, measuredLevelMcgL);
+  const safeTau = Math.max(1, currentIntervalHours);
+  const calculatedClLhr = (currentDoseMcg * F) / (safeLevel * safeTau);
+  const calculatedClLday = calculatedClLhr * 24;
+
+  // New dose calculation:
+  // MD (mcg) = [Cl (L/day) × Css target (mcg/L) × Interval (day)] / [S × F]
+  const targetIntervalDay = targetIntervalHours / 24;
+  const newMaintDoseMcgExact = (calculatedClLday * targetLevelMcgL * targetIntervalDay) / (S * F);
+  const newMaintDoseMgExact = newMaintDoseMcgExact / 1000;
+
+  // Rounding based on route
+  const isOral = dosageForm === 'tablet' || dosageForm === 'elixir';
+  let recommendedNewDoseMg = 0.125;
+  if (isOral) {
+    if (newMaintDoseMgExact < 0.09) recommendedNewDoseMg = 0.0625;
+    else if (newMaintDoseMgExact < 0.18) recommendedNewDoseMg = 0.125;
+    else if (newMaintDoseMgExact < 0.3) recommendedNewDoseMg = 0.25;
+    else if (newMaintDoseMgExact < 0.4) recommendedNewDoseMg = 0.375;
+    else recommendedNewDoseMg = 0.5;
+  } else {
+    if (newMaintDoseMgExact <= 0.15) recommendedNewDoseMg = 0.1;
+    else if (newMaintDoseMgExact <= 0.25) recommendedNewDoseMg = 0.2;
+    else if (newMaintDoseMgExact <= 0.35) recommendedNewDoseMg = 0.3;
+    else recommendedNewDoseMg = 0.4;
+  }
+
+  let note = `Patient individual CL back-calculated at ${calculatedClLhr.toFixed(2)} L/hr (${calculatedClLday.toFixed(1)} L/day).`;
+  if (measuredLevelMcgL > 2.0) {
+    note += ` WARNING: Measured level ${measuredLevelMcgL} mcg/L is in the toxic range (> 2.0 mcg/L). Consider withholding 1–2 doses and monitoring potassium, magnesium, and ECG.`;
+  }
+
+  return {
+    calculatedClLhr,
+    calculatedClLday,
+    newMaintDoseMcgExact,
+    newMaintDoseMgExact,
+    recommendedNewDoseMg,
+    recommendedNewIntervalHours: targetIntervalHours,
+    note
+  };
+}
+
+/**
+ * Digoxin Toxicity Assessment & DigiFab Antidote Parameters
+ */
+export interface DigiFabCalculationParams {
+  method: 'serum_level' | 'acute_ingestion' | 'empiric';
+  serumLevelMcgL?: number; // mcg/L (or ng/mL)
+  weightKg?: number;
+  acuteIngestedMg?: number;
+  acuteFormulationF?: number; // 0.7 tablet, 1.0 IV/capsule, 0.75 elixir
+  empiricScenario?: 'arrest_acute' | 'chronic_severe';
+}
+
+export interface DigiFabResult {
+  method: 'serum_level' | 'acute_ingestion' | 'empiric';
+  vialsExact: number;
+  vialsRounded: number;
+  totalMgDigiFab: number;
+  neutralizedDigoxinMg: number;
+  formulaUsed: string;
+  administrationGuide: string;
+  postFabMonitoringWarning: string;
+  indicationsMet: string[];
+  clinicalRecommendations: string[];
+}
+
+/**
+ * Calculate DigiFab (Digoxin Immune Fab) Antidote Dosing
+ * 1 vial (38 mg or 40 mg) binds ~0.5 mg (500 mcg) of digoxin.
+ * 
+ * Formula 1 (Serum Digoxin Conc known at steady state):
+ *   Vials = (Serum Digoxin [mcg/L] × Weight [kg]) / 100
+ * 
+ * Formula 2 (Known Acute Ingestion):
+ *   Vials = (Ingested Dose [mg] × F) / 0.5 mg/vial
+ * 
+ * Formula 3 (Empiric / Life-threatening arrest or unknown level):
+ *   - Acute cardiac arrest / hemodynamically unstable VT/VF: 10–20 vials stat
+ *   - Chronic severe toxicity with unknown concentration: 3–6 vials
+ */
+export function calculateDigiFabDose(params: DigiFabCalculationParams): DigiFabResult {
+  const {
+    method,
+    serumLevelMcgL = 0,
+    weightKg = 70,
+    acuteIngestedMg = 0,
+    acuteFormulationF = 0.8,
+    empiricScenario = 'arrest_acute'
+  } = params;
+
+  let vialsExact = 0;
+  let formulaUsed = '';
+
+  if (method === 'serum_level') {
+    // Vials = (Serum Digoxin [mcg/L] × Weight [kg]) / 100
+    vialsExact = (serumLevelMcgL * weightKg) / 100;
+    formulaUsed = `Vials = (Serum Digoxin [${serumLevelMcgL} mcg/L] × Weight [${weightKg} kg]) / 100`;
+  } else if (method === 'acute_ingestion') {
+    // Vials = (Ingested Dose [mg] × F) / 0.5 mg/vial
+    const absorbedMg = acuteIngestedMg * acuteFormulationF;
+    vialsExact = absorbedMg / 0.5;
+    formulaUsed = `Vials = (Ingested [${acuteIngestedMg} mg] × F [${acuteFormulationF}]) / 0.5 mg/vial = ${absorbedMg.toFixed(2)} mg absorbed / 0.5`;
+  } else {
+    // Empiric
+    if (empiricScenario === 'arrest_acute') {
+      vialsExact = 10; // 10 to 20 vials
+      formulaUsed = `Empiric Acute Arrest / Life-Threatening: 10 to 20 vials (Initial 10 vials IV push/rapid infusion)`;
+    } else {
+      vialsExact = 4; // 3 to 6 vials
+      formulaUsed = `Empiric Chronic Toxicity with Unknown Level: 3 to 6 vials (Recommended initial 4 vials)`;
+    }
+  }
+
+  const vialsRounded = Math.max(1, Math.ceil(vialsExact));
+  const totalMgDigiFab = vialsRounded * 38; // 38 mg lyophilized Fab per vial
+  const neutralizedDigoxinMg = Number((vialsRounded * 0.5).toFixed(2));
+
+  const administrationGuide = vialsRounded >= 10 && empiricScenario === 'arrest_acute'
+    ? 'Reconstitute each vial with 4 mL sterile water. In cardiac arrest, administer by rapid IV push over 5 minutes. For other unstable patients, infuse over 30 minutes in NSS through a 0.22-micron filter.'
+    : 'Reconstitute each vial with 4 mL sterile water for injection, dilute in 50–100 mL 0.9% NaCl, and infuse IV over 30 minutes through a 0.22-micron low protein-binding filter. Monitor continuous ECG and vital signs.';
+
+  const postFabMonitoringWarning = 'CRITICAL TDM CAVEAT: Do NOT measure total serum digoxin levels for 1–2 weeks following DigiFab administration. Standard clinical immunoassays measure inactive antibody-bound digoxin complexes, producing falsely astronomical reported concentrations (> 15–30 mcg/L) that do NOT reflect free active drug. Only specialized free/unbound digoxin assays can be interpreted.';
+
+  const clinicalRecommendations = [
+    'Withhold all further doses of digoxin immediately.',
+    'Continuous 12-lead ECG rhythm monitoring (watch for resolution of AV blocks or ectopy).',
+    'Serial potassium monitoring every 1–2 hours: serum K+ may drop precipitously as Na+/K+ ATPase pumps reactivate. Prepare to replace potassium if K+ falls < 4.0 mmol/L.',
+    'Do NOT administer IV calcium salts (calcium gluconate/chloride) for hyperkalemia in suspected digoxin toxicity due to risk of precipitation of refractory ventricular fibrillation / stone heart.',
+    'In refractory ventricular arrhythmias when DigiFab is pending: Lidocaine IV (1–1.5 mg/kg) or Phenytoin IV (15–20 mg/kg slowly) are acceptable alternative membrane-stabilizing agents. Avoid Class IA (quinidine, procainamide) and Class IC agents.'
+  ];
+
+  const indicationsMet = [
+    'Ventricular fibrillation, ventricular tachycardia, or bidirectional VT',
+    'High-grade AV block (2nd-degree Mobitz II or 3rd-degree complete heart block) unresponsive to atropine',
+    'Acute ingestion > 10 mg in adults (> 4 mg in children)',
+    'Steady-state serum digoxin concentration > 10–12 mcg/L (or > 15 nmol/L)',
+    'Serum potassium > 5.0 mmol/L in the setting of acute digoxin poisoning'
+  ];
+
+  return {
+    method,
+    vialsExact,
+    vialsRounded,
+    totalMgDigiFab,
+    neutralizedDigoxinMg,
+    formulaUsed,
+    administrationGuide,
+    postFabMonitoringWarning,
+    indicationsMet,
+    clinicalRecommendations
+  };
+}
