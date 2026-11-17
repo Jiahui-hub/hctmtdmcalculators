@@ -106,16 +106,16 @@ export function calculateVancoLoadingDose(
 
   let isCapped = false;
   let alertMessage = undefined;
-  // Single dose capped at 2g (2000 mg) per clinical guidelines
-  if (roundedDose > 2000) {
-    alertMessage = "Single loading dose capped at 2g (2000 mg) per clinical guidelines to prevent infusion-related reactions (Red Man syndrome) and nephrotoxicity.";
-    roundedDose = 2000;
+  // Single dose capped at 3g (3000 mg) per clinical guidelines
+  if (roundedDose > 3000) {
+    alertMessage = "Single loading dose capped at 3g (3000 mg) per clinical guidelines to prevent infusion-related reactions (Red Man syndrome) and nephrotoxicity.";
+    roundedDose = 3000;
     isCapped = true;
   }
 
   return {
     dose: roundedDose,
-    range: `${Math.round(minDose)} - ${Math.round(Math.min(maxDose, 2000))} mg`,
+    range: `${Math.round(minDose)} - ${Math.round(Math.min(maxDose, 3000))} mg`,
     usedWeight: weightToUse,
     usedWeightType: weightType,
     isCapped,
@@ -126,7 +126,7 @@ export function calculateVancoLoadingDose(
 /**
  * Vancomycin Maintenance Dose
  * Default 15 mg/kg/dose (actual body weight), range 15-20
- * Single dose capped at 2g (2000 mg)
+ * Single dose capped at 3g (3000 mg)
  */
 export function calculateVancoMaintenance(crcl: number, actualWeight: number, mgKg: number = 15, isAnuric: boolean = false): { dose: number; interval: number; range: string } {
   let interval = 12;
@@ -144,20 +144,20 @@ export function calculateVancoMaintenance(crcl: number, actualWeight: number, mg
   const targetDose = actualWeight * mgKg;
   let dose = Math.round(targetDose / 250) * 250;
   
-  // Single dose capped at 2g (2000mg) per dose
-  dose = Math.min(dose, 2000);
+  // Single dose capped at 3g (3000mg) per dose
+  dose = Math.min(dose, 3000);
 
   return { 
     dose, 
     interval, 
-    range: `${Math.round(minDose)} - ${Math.round(Math.min(maxDose, 2000))} mg` 
+    range: `${Math.round(minDose)} - ${Math.round(Math.min(maxDose, 3000))} mg` 
   };
 }
 
 /**
  * Vancomycin Administration & Dilution Details
  * - Dilution concentration: 5 mg/mL (Peripheral line) or up to 10 mg/mL (Central line)
- * - Loading dose tweak: 1g - 2g in 400 mL NS over 3-4 hours
+ * - Loading dose tweak: 1g - 2g in 400 mL NS over 3-4 hours; > 2g - 3g in 500 mL NS over 4-5 hours
  * - HD dilution rules:
  *   - <= 1g: dilute in 100 mL NS, start on last hour of HD
  *   - > 1g: dilute in 200 mL NS, start on last hour of HD and continue 1 hour post-HD
@@ -199,9 +199,19 @@ export function getVancoAdminDetails(
     }
   }
 
-  // Loading Dose administration tweak: 1g - 2g in 400 mL NS over 3-4 hours
+  // Loading Dose administration tweak: 1g - 2g in 400 mL NS over 3-4 hours; > 2g - 3g in 500 mL NS over 4-5 hours
   if (isLoading) {
-    if (dose >= 1000) {
+    if (dose > 2000) {
+      const conc = (dose / 500).toFixed(1);
+      return {
+        diluent: "500 mL NS",
+        time: "4-5 hours",
+        conc: `${conc} mg/mL`,
+        instruction: "Loading dose (> 2g–3g): Dilute in 500 mL NS over 4–5 hours (≤ 10 mg/min).",
+        peripheralLineSafe: parseFloat(conc) <= 5.0,
+        centralLineOnly: parseFloat(conc) > 5.0
+      };
+    } else if (dose >= 1000) {
       const conc = (dose / 400).toFixed(1);
       return {
         diluent: "400 mL NS",
@@ -238,7 +248,7 @@ export function getVancoAdminDetails(
     diluent = 400; // 400 mL for 1.25g - 2g
     time = "3-4 hours";
   } else {
-    diluent = 500;
+    diluent = 500; // 500 mL for 2.25g - 3g
     time = "4-5 hours";
   }
 
@@ -262,9 +272,13 @@ export function getVancoAdminDetails(
  */
 export interface VancoHDAdjustmentResult {
   status: 'low' | 'target' | 'high' | 'critical';
+  action: 'increase' | 'maintain' | 'reduce' | 'withhold';
   recommendation: string;
+  reason: string;
+  recommendedDose: number;
   recommendedDoseMin: number;
   recommendedDoseMax: number;
+  doseRange: { min: number; max: number };
   actionText: string;
   badgeColor: string;
   details: string;
@@ -274,23 +288,32 @@ export function adjustVancoHD(currentDose: number, measuredLevel: number): Vanco
   const safeDose = Math.max(250, currentDose || 1000);
 
   if (measuredLevel < 10) {
-    const minDose = Math.min(2000, Math.round((safeDose * 1.25) / 250) * 250);
-    const maxDose = Math.min(2000, Math.round((safeDose * 1.50) / 250) * 250);
+    const minDose = Math.min(3000, Math.round((safeDose * 1.25) / 250) * 250);
+    const maxDose = Math.min(3000, Math.round((safeDose * 1.50) / 250) * 250);
+    const recDose = Math.min(3000, Math.round(((minDose + maxDose) / 2) / 250) * 250);
     return {
       status: 'low',
+      action: 'increase',
       recommendation: `Sub-therapeutic (< 10 mg/L). Increase dose by 25% – 50% from last dose.`,
+      reason: `Pre-dialysis level is < 10 mg/L. Increase dose by 25%–50% post-HD (capped at 3g).`,
+      recommendedDose: recDose,
       recommendedDoseMin: minDose,
       recommendedDoseMax: maxDose,
-      actionText: `Increase by 25%–50%: Recommend ${minDose}${minDose !== maxDose ? ` – ${maxDose}` : ''} mg post-HD (capped at 2g).`,
+      doseRange: { min: minDose, max: maxDose },
+      actionText: `Increase by 25%–50%: Recommend ${minDose}${minDose !== maxDose ? ` – ${maxDose}` : ''} mg post-HD (capped at 3g).`,
       badgeColor: 'amber',
       details: 'Level below 10 mg/L risks therapeutic failure and resistance. Administer adjusted dose during/post-HD.'
     };
   } else if (measuredLevel <= 20) {
     return {
       status: 'target',
+      action: 'maintain',
       recommendation: `Therapeutic target achieved (10 – 20 mg/L). Maintain current dose.`,
+      reason: `Pre-dialysis level is within target (10 – 20 mg/L). Maintain current post-HD dose.`,
+      recommendedDose: safeDose,
       recommendedDoseMin: safeDose,
       recommendedDoseMax: safeDose,
+      doseRange: { min: safeDose, max: safeDose },
       actionText: `Maintain current dose of ${safeDose} mg post-HD on dialysis days.`,
       badgeColor: 'emerald',
       details: 'Patient is within therapeutic pre-dialysis target range (10–20 mg/L). Continue same maintenance schedule.'
@@ -298,11 +321,16 @@ export function adjustVancoHD(currentDose: number, measuredLevel: number): Vanco
   } else if (measuredLevel <= 24.65) {
     const minDose = Math.max(250, Math.round((safeDose * 0.50) / 250) * 250);
     const maxDose = Math.max(250, Math.round((safeDose * 0.75) / 250) * 250);
+    const recDose = Math.max(250, Math.round(((minDose + maxDose) / 2) / 250) * 250);
     return {
       status: 'high',
+      action: 'reduce',
       recommendation: `Elevated level (20 – 24.65 mg/L). Reduce dose by 25% – 50% from last dose.`,
+      reason: `Pre-dialysis level exceeds 20 mg/L. Reduce dose by 25%–50% post-HD.`,
+      recommendedDose: recDose,
       recommendedDoseMin: minDose,
       recommendedDoseMax: maxDose,
+      doseRange: { min: minDose, max: maxDose },
       actionText: `Reduce by 25%–50%: Recommend ${minDose}${minDose !== maxDose ? ` – ${maxDose}` : ''} mg post-HD.`,
       badgeColor: 'amber',
       details: 'Pre-dialysis level exceeds 20 mg/L. Reduce dose by 25–50% to prevent cumulative accumulation and ototoxicity.'
@@ -310,9 +338,13 @@ export function adjustVancoHD(currentDose: number, measuredLevel: number): Vanco
   } else {
     return {
       status: 'critical',
+      action: 'withhold',
       recommendation: `CRITICAL HIGH LEVEL (> 24.65 mg/L): Withhold Vancomycin until next HD.`,
+      reason: `Pre-dialysis level > 24.65 mg/L carries high toxicity risk. Withhold vancomycin and recheck level prior to next HD.`,
+      recommendedDose: 0,
       recommendedDoseMin: 0,
       recommendedDoseMax: 0,
+      doseRange: { min: 0, max: 0 },
       actionText: `WITHHOLD Vancomycin. Do NOT administer dose post-HD.`,
       badgeColor: 'red',
       details: 'Serum concentration > 24.65 mg/L carries severe ototoxicity and toxicity risk. Withhold vancomycin and recheck pre-dialysis level prior to next HD.'
@@ -420,7 +452,7 @@ export interface VancoDosingOption {
 }
 
 /**
- * Generate multiple dosing regimen comparisons (500mg - 2000mg) for Vancomycin
+ * Generate multiple dosing regimen comparisons (500mg - 3000mg) for Vancomycin
  */
 export function getVancoDosingOptions(
   actualWeight: number,
@@ -431,7 +463,7 @@ export function getVancoDosingOptions(
 ): VancoDosingOption[] {
   if (!interval || interval <= 0 || !pk || pk.cl <= 0) return [];
 
-  const standardDoses = [500, 750, 1000, 1250, 1500, 1750, 2000];
+  const standardDoses = [500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000];
   
   const allOptions = standardDoses.map(dose => {
     const levels = predictVancoLevels(dose, interval, pk, tInfusion, mic);
@@ -981,15 +1013,46 @@ export function getAminoglycosideDosingOptions(
     };
   });
 
-  // Limit 'above target' (high_risk) to at most 2 choices just like Vancomycin
-  let aboveTargetCount = 0;
-  return allOptions.filter(opt => {
-    if (opt.suitability === 'high_risk') {
-      aboveTargetCount++;
-      return aboveTargetCount <= 2;
+  // Curated 3-4 rows: 1 closest below-target, up to 2 optimal on-target choices, and 1 closest above-target
+  const peakMid = (targetPeakMin + targetPeakMax) / 2;
+  const lowOpts = allOptions.filter(opt => opt.suitability === 'low');
+  const targetOpts = allOptions.filter(opt => opt.suitability === 'target');
+  const highOpts = allOptions.filter(opt => opt.suitability === 'high_risk');
+
+  const curated: AminoglycosideDosingOption[] = [];
+
+  if (targetOpts.length > 0) {
+    if (lowOpts.length > 0) {
+      curated.push(lowOpts[lowOpts.length - 1]);
     }
-    return true;
-  });
+    if (targetOpts.length <= 2) {
+      curated.push(...targetOpts);
+    } else {
+      const closestTwoTargets = [...targetOpts]
+        .sort((a, b) => Math.abs(a.cmax - peakMid) - Math.abs(b.cmax - peakMid))
+        .slice(0, 2)
+        .sort((a, b) => a.dose - b.dose);
+      curated.push(...closestTwoTargets);
+    }
+    if (highOpts.length > 0) {
+      curated.push(highOpts[0]);
+    }
+  } else {
+    // Fallback if no discrete standard dose hits the target window cleanly: pick 3-4 closest bracketing options
+    if (lowOpts.length > 0 && highOpts.length > 0) {
+      curated.push(...lowOpts.slice(-2));
+      curated.push(...highOpts.slice(0, 2));
+    } else {
+      const closestThree = [...allOptions]
+        .sort((a, b) => Math.abs(a.cmax - peakMid) - Math.abs(b.cmax - peakMid))
+        .slice(0, 3);
+      curated.push(...closestThree);
+    }
+  }
+
+  // Deduplicate and return sorted ascending by dose (max 4 rows)
+  const uniqueByDose = Array.from(new Map(curated.map(opt => [opt.dose, opt])).values());
+  return uniqueByDose.sort((a, b) => a.dose - b.dose).slice(0, 4);
 }
 
 /**
@@ -1207,7 +1270,104 @@ export function calculateVancoRandomPK(
 }
 
 /**
- * Calculate Vancomycin Ke from a steady-state trough
+ * Compute elapsed hours between two HH:MM clock times, handling midnight rollover.
+ */
+export function computeElapsedHoursFromClock(doseTimeHHMM: string, sampleTimeHHMM: string, extraDays: number = 0): number | null {
+  if (!doseTimeHHMM || !sampleTimeHHMM) return null;
+  const [dh, dm] = doseTimeHHMM.split(':').map(Number);
+  const [sh, sm] = sampleTimeHHMM.split(':').map(Number);
+  if ([dh, dm, sh, sm].some(v => isNaN(v))) return null;
+
+  const doseMins = dh * 60 + dm;
+  const sampleMins = sh * 60 + sm;
+  let diffMins = sampleMins - doseMins;
+  if (diffMins < 0) {
+    diffMins += 24 * 60; // crossed midnight
+  }
+  diffMins += Math.max(0, extraDays) * 24 * 60;
+  return Number((diffMins / 60).toFixed(2));
+}
+
+/**
+ * Predict steady-state Vancomycin concentration at an arbitrary time t (hours since start of infusion)
+ * Supports t <= tInfusion (during infusion), tInfusion < t <= tau (elimination), and t > tau (delayed dose)
+ */
+export function predictVancoSteadyStateAtTime(
+  dose: number,
+  interval: number,
+  pk: VancoPK,
+  sampleTimeHours: number,
+  tInfusion: number = 1
+): number {
+  if (!pk || !pk.ke || pk.ke <= 0 || !pk.vd || pk.vd <= 0 || !interval || interval <= 0 || !dose || dose <= 0) {
+    return 0;
+  }
+  const { ke, vd } = pk;
+  const tau = Math.max(1, interval);
+  const tinf = Math.max(0.1, Math.min(tau, tInfusion || 1));
+  const t = Math.max(0, sampleTimeHours);
+
+  const denomAccum = Math.max(0.00001, 1 - Math.exp(-ke * tau));
+
+  if (t <= tinf) {
+    // During current steady-state infusion: residual from previous doses + new infusion buildup
+    const cEndPrev = (dose / (tinf * vd * ke)) * ((1 - Math.exp(-ke * tinf)) / denomAccum);
+    const residual = cEndPrev * Math.exp(-ke * (tau - tinf + t));
+    const currentInf = (dose / (tinf * vd * ke)) * (1 - Math.exp(-ke * t));
+    return Math.max(0, residual + currentInf);
+  } else {
+    // Post-infusion steady-state decay (works for t <= tau and delayed t > tau)
+    const cEndOfInfusion = (dose / (tinf * vd * ke)) * ((1 - Math.exp(-ke * tinf)) / denomAccum);
+    return Math.max(0, cEndOfInfusion * Math.exp(-ke * (t - tinf)));
+  }
+}
+
+/**
+ * Solve patient-specific Vancomycin Ke via numerical bisection given exact sample collection time
+ */
+export function solveVancoKeAtSampleTime(
+  dose: number,
+  interval: number,
+  vd: number,
+  measuredLevel: number,
+  sampleTimeHours: number,
+  tInfusion: number = 1
+): number {
+  if (dose <= 0 || interval <= 0 || vd <= 0 || measuredLevel <= 0) {
+    return 0.08;
+  }
+
+  let low = 0.002;
+  let high = 0.8;
+
+  const evalConc = (keVal: number) =>
+    predictVancoSteadyStateAtTime(
+      dose,
+      interval,
+      { vd, cl: keVal * vd, ke: keVal, halfLife: 0.693 / keVal },
+      sampleTimeHours,
+      tInfusion
+    );
+
+  // Concentration decreases monotonically as Ke increases (for post-infusion times)
+  if (measuredLevel >= evalConc(low)) return low;
+  if (measuredLevel <= evalConc(high)) return high;
+
+  for (let i = 0; i < 60; i++) {
+    const mid = (low + high) / 2;
+    const cMid = evalConc(mid);
+    if (cMid > measuredLevel) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return (low + high) / 2;
+}
+
+/**
+ * Calculate Vancomycin Ke from a steady-state trough (defaults to sample at interval tau)
  * Assumes Vd
  */
 export function calculateVancoKeFromTrough(
@@ -1215,23 +1375,16 @@ export function calculateVancoKeFromTrough(
   interval: number,
   vd: number,
   trough: number,
-  tInfusion: number = 2
+  tInfusion: number = 2,
+  sampleTimeHours?: number
 ): number {
-  // Iterative solution for Ke:
-  // Cmin = (Dose/Vd) * ((1-e^-ke*tinf)/(ke*tinf)) * (1/(1-e^-ke*tau)) * e^-ke*(tau-tinf)
-  let ke = 0.1; // Starting guess
-  for (let i = 0; i < 5; i++) {
-    const cmax = (dose / vd) * ((1 - Math.exp(-ke * tInfusion)) / (ke * tInfusion)) * (1 / (1 - Math.exp(-ke * interval)));
-    const cmin_calc = cmax * Math.exp(-ke * (interval - tInfusion));
-    // Adjust Ke based on ratio
-    ke = ke * (cmin_calc / trough);
-  }
-  return ke;
+  const effectiveTime = sampleTimeHours !== undefined && sampleTimeHours > 0 ? sampleTimeHours : interval;
+  return solveVancoKeAtSampleTime(dose, interval, vd, trough, effectiveTime, tInfusion);
 }
 
 /**
  * Calculate Vancomycin Ke from an early, pre-steady state level (e.g. after Dose 1, 2, etc.)
- * Assumes Vd (L)
+ * Uses numerical bisection for guaranteed convergence.
  */
 export function calculateVancoKeFromEarlyLevel(
   dose: number,
@@ -1242,29 +1395,38 @@ export function calculateVancoKeFromEarlyLevel(
   vd: number,
   tInfusion: number = 1
 ): number {
-  let ke = 0.1; // Starting guess
-  for (let i = 0; i < 6; i++) {
-    const calcLevel = predictLevelAfterDoseN(
+  if (dose <= 0 || interval <= 0 || vd <= 0 || measuredLevel <= 0) return 0.08;
+
+  let low = 0.005;
+  let high = 0.6;
+
+  const evalEarly = (keVal: number) =>
+    predictLevelAfterDoseN(
       dose,
       interval,
       doseNumber,
       timeSinceDose,
-      { vd, cl: ke * vd, ke, halfLife: 0.693 / ke },
+      { vd, cl: keVal * vd, ke: keVal, halfLife: 0.693 / keVal },
       tInfusion
     );
-    // Adjust Ke dynamically based on the ratio of calculated to measured level
-    if (calcLevel > 0 && measuredLevel > 0) {
-      ke = ke * (calcLevel / measuredLevel);
+
+  if (measuredLevel >= evalEarly(low)) return low;
+  if (measuredLevel <= evalEarly(high)) return high;
+
+  for (let i = 0; i < 55; i++) {
+    const mid = (low + high) / 2;
+    if (evalEarly(mid) > measuredLevel) {
+      low = mid;
+    } else {
+      high = mid;
     }
   }
-  // Clamp ke to reasonable physiological range (0.015 - 0.5 h^-1)
-  return Math.max(0.015, Math.min(0.5, ke));
+
+  return (low + high) / 2;
 }
 
 /**
- * Vancomycin TDM Adjustment (Linear / Proportional Kinetics)
- * Standard Target: 10 - 15 mg/L (midpoint ~12.5 mg/L) for mild-moderate infections
- * High Target: 15 - 20 mg/L (midpoint ~17.5 mg/L) for severe/MRSA infections
+ * Vancomycin TDM Adjustment (Linear / Proportional Kinetics, max 3g)
  */
 export function adjustVancoDose(
   currentDose: number, 
@@ -1275,16 +1437,321 @@ export function adjustVancoDose(
   if (measuredLevelMgL <= 0) {
     return { dose: currentDose, interval: currentInterval, ratio: 1, calculatedRawDose: currentDose };
   }
-  // New Dose = Old Dose * (Target / Measured)
   const ratio = targetLevelMgL / measuredLevelMgL;
   const calculatedRawDose = currentDose * ratio;
   const newDose = Math.round(calculatedRawDose / 250) * 250;
   
   return { 
-    dose: Math.max(250, Math.min(newDose, 2000)), 
+    dose: Math.max(250, Math.min(newDose, 3000)), 
     interval: currentInterval,
     ratio,
     calculatedRawDose
+  };
+}
+
+export interface VancoTimedRegimenOption {
+  dose: number;
+  interval: number;
+  totalDailyDose: number;
+  predictedCmin: number;
+  predictedCmax: number;
+  predictedAuc24: number;
+  predictedAucMic: number;
+  inTroughTarget: boolean;
+  inAucTarget: boolean;
+  suitabilityLabel: string;
+}
+
+export interface VancoTimedTDMResult {
+  pk: VancoPK;
+  targetMode: 'auc' | 'trough';
+  calculationMethod: 'one_level_timed' | 'two_level_sawchuk_zaske';
+  twoLevelNotice?: string;
+  vdPerKg?: number;
+  trapezoidalAuc24?: number;
+  exactTargetDailyDose: number;
+  mic: number;
+  aucTargetMin: number;
+  aucTargetMax: number;
+  effectiveSampleHours: number;
+  offsetFromTauHours: number; // negative = drawn early before tau, positive = delayed after tau
+  samplePhase: 'during_infusion' | 'distribution_phase' | 'elimination_phase' | 'delayed_past_tau';
+  samplePhaseWarning?: string;
+  extrapolatedTrough: number;
+  estimatedPeak: number;
+  currentAuc24: number;
+  currentAucMic: number;
+  recommendedDose: number;
+  recommendedInterval: number;
+  predictedNewCmin: number;
+  predictedNewCmax: number;
+  predictedNewAuc24: number;
+  predictedNewAucMic: number;
+  sameIntervalOption: VancoTimedRegimenOption;
+  alternativeRegimens: VancoTimedRegimenOption[];
+}
+
+/**
+ * Comprehensive Timed-Sample & AUC-Guided Vancomycin Steady-State TDM Solver (capped at 3g / 3000 mg)
+ * Supports:
+ * - 1-Level Timed Steady-State PK (numerical Ke bisection using estimated/manual Vd)
+ * - Optional 2-Level Peak + Trough Sawchuk-Zaske PK & Linear-Log Trapezoidal AUC (individualized Vd, Ke, Cl, AUC24)
+ * - Dual optimization modes: AUC-Guided (AUC24/MIC 400-600) or Trough-Guided (10-15 / 15-20 mg/L)
+ */
+export function adjustVancoTimedTDM(params: {
+  currentDose: number;
+  currentInterval: number;
+  measuredLevel: number;
+  sampleTimeHours: number;
+  tInfusion: number;
+  vd: number;
+  targetMin: number;
+  targetMax: number;
+  mic?: number;
+  targetMode?: 'auc' | 'trough';
+  aucTargetMin?: number;
+  aucTargetMax?: number;
+  peakLevel?: number;
+  peakSampleTimeHours?: number;
+  patientWeightKg?: number;
+}): VancoTimedTDMResult {
+  const {
+    currentDose,
+    currentInterval,
+    measuredLevel,
+    sampleTimeHours,
+    tInfusion,
+    vd,
+    targetMin,
+    targetMax,
+    mic = 1,
+    targetMode = 'auc',
+    aucTargetMin = 400,
+    aucTargetMax = 600,
+    peakLevel,
+    peakSampleTimeHours,
+    patientWeightKg
+  } = params;
+
+  const safeDose = Math.max(250, currentDose || 1000);
+  const safeTau = Math.max(4, currentInterval || 12);
+  const safeTinf = Math.max(0.5, tInfusion || 1);
+  const safeSampleTime = Math.max(0.25, sampleTimeHours || safeTau);
+  const safeVdFallback = Math.max(10, vd || 49);
+  const safeMic = Math.max(0.1, mic || 1);
+  const targetMid = (targetMin + targetMax) / 2;
+  const aucMid = (aucTargetMin + aucTargetMax) / 2;
+
+  let samplePhase: VancoTimedTDMResult['samplePhase'] = 'elimination_phase';
+  let samplePhaseWarning: string | undefined;
+
+  if (safeSampleTime <= safeTinf) {
+    samplePhase = 'during_infusion';
+    samplePhaseWarning = `Trough/late sample drawn during the ${safeTinf}h infusion window. Levels during infusion cannot reliably estimate elimination rate; repeat true pre-dose trough if possible.`;
+  } else if (safeSampleTime <= safeTinf + 1.0) {
+    samplePhase = 'distribution_phase';
+    samplePhaseWarning = `Sampled within 1 hour post-infusion (alpha-distribution phase). Tissue equilibration is incomplete; interpret PK estimate cautiously.`;
+  } else if (safeSampleTime > safeTau) {
+    samplePhase = 'delayed_past_tau';
+    samplePhaseWarning = `Sample drawn ${(safeSampleTime - safeTau).toFixed(1)}h after scheduled q${safeTau}h dose (delayed/held dose). Extrapolated true trough at ${safeTau}h is higher than the measured level.`;
+  }
+
+  let calculationMethod: 'one_level_timed' | 'two_level_sawchuk_zaske' = 'one_level_timed';
+  let twoLevelNotice: string | undefined;
+  let pk: VancoPK;
+  let extrapolatedTrough: number;
+  let estimatedPeak: number;
+  let currentAuc24: number;
+  let currentAucMic: number;
+  let trapezoidalAuc24: number | undefined;
+
+  // Attempt 2-Level Peak + Trough Sawchuk-Zaske / Linear-Log Trapezoidal AUC if optional 2nd Peak level is provided
+  let usedTwoLevel = false;
+  if (peakLevel !== undefined && peakLevel > 0 && peakSampleTimeHours !== undefined && peakSampleTimeHours > 0) {
+    if (peakSampleTimeHours >= safeSampleTime) {
+      twoLevelNotice = `Peak sample time (${peakSampleTimeHours.toFixed(2)}h) must be earlier than the trough/late sample (${safeSampleTime.toFixed(2)}h). Using 1-level timed PK fallback.`;
+    } else if (peakLevel <= measuredLevel) {
+      twoLevelNotice = `Peak level (${peakLevel.toFixed(1)} mg/L) must exceed the late/trough level (${measuredLevel.toFixed(1)} mg/L). Using 1-level timed PK fallback.`;
+    } else {
+      const t1 = peakSampleTimeHours;
+      const t2 = safeSampleTime;
+      const rawKe = Math.log(peakLevel / measuredLevel) / (t2 - t1);
+      const ke2 = Math.max(0.002, Math.min(0.8, rawKe));
+      const cMaxEnd = peakLevel * Math.exp(ke2 * (t1 - safeTinf));
+      const cMinTrue = measuredLevel * Math.exp(-ke2 * (safeTau - t2));
+      const denom = cMaxEnd - cMinTrue * Math.exp(-ke2 * safeTinf);
+
+      if (denom > 0.1 && isFinite(denom)) {
+        const computedVd = (safeDose / (safeTinf * ke2)) * ((1 - Math.exp(-ke2 * safeTinf)) / denom);
+        const clampedVd = Math.max(10, Math.min(250, computedVd));
+        const cl2 = ke2 * clampedVd;
+        const halfLife2 = 0.693 / ke2;
+
+        // ASHP/IDSA 2020 Linear-Logarithmic Trapezoidal AUC24
+        const aucInf = ((cMinTrue + cMaxEnd) * safeTinf) / 2;
+        const aucElim = (cMaxEnd - cMinTrue) / ke2;
+        const trapAuc24 = (aucInf + aucElim) * (24 / safeTau);
+
+        pk = { vd: clampedVd, cl: cl2, ke: ke2, halfLife: halfLife2 };
+        extrapolatedTrough = Math.max(0, cMinTrue);
+        estimatedPeak = Math.max(0, cMaxEnd * Math.exp(-ke2 * 1.0));
+        trapezoidalAuc24 = Math.max(0, trapAuc24);
+        currentAuc24 = trapezoidalAuc24;
+        currentAucMic = currentAuc24 / safeMic;
+        calculationMethod = 'two_level_sawchuk_zaske';
+        usedTwoLevel = true;
+
+        if (t1 <= safeTinf) {
+          twoLevelNotice = `Peak drawn during infusion (${t1.toFixed(2)}h ≤ ${safeTinf}h); distribution equilibration may cause Vd/AUC variability.`;
+        } else if (t1 < safeTinf + 0.75) {
+          twoLevelNotice = `Peak drawn <45 min post-infusion (${t1.toFixed(2)}h); ideally sample ≥1h post-infusion for post-distribution accuracy.`;
+        }
+      } else {
+        twoLevelNotice = `2-level mathematical parameters out of physiological bounds; using 1-level timed PK fallback.`;
+      }
+    }
+  }
+
+  if (!usedTwoLevel) {
+    const ke = solveVancoKeAtSampleTime(safeDose, safeTau, safeVdFallback, measuredLevel, safeSampleTime, safeTinf);
+    const cl = ke * safeVdFallback;
+    const halfLife = 0.693 / ke;
+    pk = { vd: safeVdFallback, cl, ke, halfLife };
+
+    const currentLevels = predictVancoLevels(safeDose, safeTau, pk, safeTinf, safeMic);
+    extrapolatedTrough = currentLevels.cmin;
+    estimatedPeak = currentLevels.cmax;
+    currentAuc24 = currentLevels.auc24;
+    currentAucMic = currentLevels.aucMic;
+  }
+
+  const vdPerKg = patientWeightKg && patientWeightKg > 0 ? +(pk!.vd / patientWeightKg).toFixed(2) : undefined;
+  const exactTargetDailyDose = Math.round(aucMid * safeMic * pk!.cl);
+
+  const candidateDoses = [250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000];
+  const evaluateBestForInterval = (tau: number): { option: VancoTimedRegimenOption; score: number } => {
+    let bestOpt: VancoTimedRegimenOption | null = null;
+    let bestScore = Infinity;
+
+    for (const d of candidateDoses) {
+      const infHrs = Math.max(safeTinf, d > 2000 ? 3 : d > 1000 ? 2 : 1);
+      const lv = predictVancoLevels(d, tau, pk!, infHrs, safeMic);
+      const inTrough = lv.cmin >= targetMin && lv.cmin <= targetMax;
+      const inAuc = lv.aucMic >= aucTargetMin && lv.aucMic <= aucTargetMax;
+
+      let score = Infinity;
+      let suitabilityLabel = 'Off-target';
+
+      if (targetMode === 'auc') {
+        const aucDist = Math.abs(lv.aucMic - aucMid) / 25;
+        const penalty =
+          (inAuc ? 0 : 30) +
+          (lv.aucMic > aucTargetMax ? 20 : 0) +
+          (lv.cmin > 20 ? 25 : 0) +
+          (lv.cmax > 45 ? 15 : 0) +
+          (tau === safeTau ? 0 : 0.4) +
+          (tau === 36 || tau === 48 ? 0.5 : 0);
+        score = aucDist + penalty;
+
+        if (inAuc && lv.cmin <= 20) {
+          suitabilityLabel = inTrough ? 'Optimal AUC & Trough' : 'Optimal AUC (400–600)';
+        } else if (inAuc && lv.cmin > 20) {
+          suitabilityLabel = 'AUC Met · High Trough (>20)';
+        } else if (lv.aucMic < aucTargetMin) {
+          suitabilityLabel = 'Sub-therapeutic AUC';
+        } else {
+          suitabilityLabel = 'High AUC / AKI Risk';
+        }
+      } else {
+        const troughDist = Math.abs(lv.cmin - targetMid);
+        const penalty = (inTrough ? 0 : 20) + (lv.cmin > 20 ? 15 : 0) + (lv.aucMic > 650 ? 10 : 0) + (inAuc ? -2 : 0);
+        score = troughDist + penalty;
+
+        if (inTrough && inAuc) suitabilityLabel = 'Optimal Trough & AUC';
+        else if (inTrough) suitabilityLabel = 'Target Trough';
+        else if (inAuc) suitabilityLabel = 'Target AUC (400–600)';
+        else if (lv.cmin < targetMin) suitabilityLabel = 'Below Target';
+        else suitabilityLabel = 'Above Target';
+      }
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestOpt = {
+          dose: d,
+          interval: tau,
+          totalDailyDose: d * (24 / tau),
+          predictedCmin: lv.cmin,
+          predictedCmax: lv.cmax,
+          predictedAuc24: lv.auc24,
+          predictedAucMic: lv.aucMic,
+          inTroughTarget: inTrough,
+          inAucTarget: inAuc,
+          suitabilityLabel
+        };
+      }
+    }
+
+    return { option: bestOpt!, score: bestScore };
+  };
+
+  const sameIntervalEval = evaluateBestForInterval(safeTau);
+  const sameIntervalOption = sameIntervalEval.option;
+
+  const candidateIntervals = Array.from(new Set([6, 8, 12, 24, 36, 48, safeTau])).sort((a, b) => a - b);
+  const alternativeEvals = candidateIntervals
+    .filter(tau => tau >= 8 || safeTau === 6)
+    .map(tau => evaluateBestForInterval(tau));
+  const alternativeRegimens = alternativeEvals.map(e => e.option);
+
+  let primary = sameIntervalOption;
+  if (targetMode === 'auc') {
+    const sameAcceptable =
+      sameIntervalOption.inAucTarget &&
+      sameIntervalOption.predictedCmin <= 20 &&
+      sameIntervalOption.predictedCmax <= 45;
+    if (!sameAcceptable) {
+      const sortedBest = [...alternativeEvals].sort((a, b) => a.score - b.score);
+      if (sortedBest.length > 0 && sortedBest[0].score < sameIntervalEval.score) {
+        primary = sortedBest[0].option;
+      }
+    }
+  } else {
+    if (!sameIntervalOption.inTroughTarget || sameIntervalOption.predictedAucMic > 650) {
+      const betterAlt = alternativeRegimens.find(r => r.inTroughTarget && r.inAucTarget)
+        || alternativeRegimens.find(r => r.inTroughTarget);
+      if (betterAlt) {
+        primary = betterAlt;
+      }
+    }
+  }
+
+  return {
+    pk: pk!,
+    targetMode,
+    calculationMethod,
+    twoLevelNotice,
+    vdPerKg,
+    trapezoidalAuc24,
+    exactTargetDailyDose,
+    mic: safeMic,
+    aucTargetMin,
+    aucTargetMax,
+    effectiveSampleHours: safeSampleTime,
+    offsetFromTauHours: Number((safeSampleTime - safeTau).toFixed(2)),
+    samplePhase,
+    samplePhaseWarning,
+    extrapolatedTrough: extrapolatedTrough!,
+    estimatedPeak: estimatedPeak!,
+    currentAuc24: currentAuc24!,
+    currentAucMic: currentAucMic!,
+    recommendedDose: primary.dose,
+    recommendedInterval: primary.interval,
+    predictedNewCmin: primary.predictedCmin,
+    predictedNewCmax: primary.predictedCmax,
+    predictedNewAuc24: primary.predictedAuc24,
+    predictedNewAucMic: primary.predictedAucMic,
+    sameIntervalOption,
+    alternativeRegimens
   };
 }
 
