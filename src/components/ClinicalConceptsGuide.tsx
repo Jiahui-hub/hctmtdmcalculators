@@ -121,7 +121,7 @@ export function ClinicalConceptsGuide() {
                     </p>
                     <p className="font-bold text-slate-800 text-[11px]">How does it work?</p>
                     <p className="text-slate-600 leading-relaxed">
-                      Applies linear proportional adjustment (<span className="font-mono font-bold">New Dose = Old Dose × Target / Measured</span>) to reach therapeutic window.
+                      Back-calculates individual elimination (<span className="font-bold">Ke</span>) from exact sample time to extrapolate true trough (<span className="font-mono font-bold">Cmin</span> at τ), <span className="font-bold">AUC24/MIC</span>, and optimize dose & interval.
                     </p>
                   </div>
                 </div>

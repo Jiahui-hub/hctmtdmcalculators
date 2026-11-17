@@ -52,6 +52,9 @@ import {
   calculateVancoRandomPK,
   predictLevelAfterDoseN,
   calculateVancoKeFromEarlyLevel,
+  adjustVancoTimedTDM,
+  computeElapsedHoursFromClock,
+  VancoTimedTDMResult,
   PatientData,
   VANCO_CONVERSION_FACTOR
 } from './lib/calculations';
@@ -78,6 +81,20 @@ export default function App() {
   const [currentVancoDose, setCurrentVancoDose] = useState<string>('1000');
   const [currentVancoInterval, setCurrentVancoInterval] = useState<string>('12');
   const [measuredVancoLevel, setMeasuredVancoLevel] = useState<string>('');
+  const [vancoTdmMode, setVancoTdmMode] = useState<'auc' | 'trough'>('auc');
+  const [vancoTdmAucTarget, setVancoTdmAucTarget] = useState<'400-600' | '450-550' | '400-500'>('400-600');
+  const [vancoTdmTimeMode, setVancoTdmTimeMode] = useState<'clock' | 'hours'>('hours');
+  const [vancoTdmDoseTime, setVancoTdmDoseTime] = useState<string>('08:00');
+  const [vancoTdmSampleTime, setVancoTdmSampleTime] = useState<string>('19:30');
+  const [vancoTdmExtraDay, setVancoTdmExtraDay] = useState<boolean>(false);
+  const [vancoTdmElapsedHours, setVancoTdmElapsedHours] = useState<string>('11.5');
+  const [vancoTdmInfusionHours, setVancoTdmInfusionHours] = useState<string>('1');
+  const [vancoUseTwoLevel, setVancoUseTwoLevel] = useState<boolean>(false);
+  const [vancoTdmPeakLevel, setVancoTdmPeakLevel] = useState<string>('');
+  const [vancoTdmPeakTimeMode, setVancoTdmPeakTimeMode] = useState<'clock' | 'hours'>('hours');
+  const [vancoTdmPeakTime, setVancoTdmPeakTime] = useState<string>('10:00');
+  const [vancoTdmPeakElapsedHours, setVancoTdmPeakElapsedHours] = useState<string>('2');
+  const [selectedTdmIntervalOverride, setSelectedTdmIntervalOverride] = useState<number | null>(null);
 
   // Vanco Overrides & Sub-tabs
   const [vancoSubTab, setVancoSubTab] = useState<'initial' | 'tdm'>('initial');
@@ -104,6 +121,9 @@ export default function App() {
 
   // Early Level Predictor State
   const [earlyDoseNumber, setEarlyDoseNumber] = useState("1");
+  const [earlyTimeMode, setEarlyTimeMode] = useState<'clock' | 'hours'>('hours');
+  const [earlyDoseTime, setEarlyDoseTime] = useState("08:00");
+  const [earlySampleTime, setEarlySampleTime] = useState("19:30");
   const [earlyTimeSinceDose, setEarlyTimeSinceDose] = useState("12");
   const [earlyMeasuredLevel, setEarlyMeasuredLevel] = useState("");
 
@@ -232,16 +252,114 @@ export default function App() {
   // Target midpoint: 12.5 mg/L for 10-15; 17.5 mg/L for 15-20
   const vancoTargetMidpoint = vancoTargetTroughRange === 'high' ? 17.5 : 12.5;
 
-  const vancoAdjustment = useMemo(() => {
+  const effectiveVancoTdmSampleHours = useMemo(() => {
+    const fallbackTau = parseFloat(currentVancoInterval) || 12;
+    if (vancoTdmTimeMode === 'clock') {
+      const diff = computeElapsedHoursFromClock(vancoTdmDoseTime, vancoTdmSampleTime, vancoTdmExtraDay ? 1 : 0);
+      return diff !== null && diff > 0 ? diff : fallbackTau;
+    }
+    const parsed = parseFloat(vancoTdmElapsedHours);
+    return parsed > 0 ? parsed : fallbackTau;
+  }, [vancoTdmTimeMode, vancoTdmDoseTime, vancoTdmSampleTime, vancoTdmExtraDay, vancoTdmElapsedHours, currentVancoInterval]);
+
+  const effectiveVancoTdmPeakHours = useMemo(() => {
+    const fallbackPeakHrs = (parseFloat(vancoTdmInfusionHours) || 1) + 1;
+    if (vancoTdmPeakTimeMode === 'clock') {
+      const diff = computeElapsedHoursFromClock(vancoTdmDoseTime, vancoTdmPeakTime, 0);
+      return diff !== null && diff > 0 ? diff : fallbackPeakHrs;
+    }
+    const parsed = parseFloat(vancoTdmPeakElapsedHours);
+    return parsed > 0 ? parsed : fallbackPeakHrs;
+  }, [vancoTdmPeakTimeMode, vancoTdmDoseTime, vancoTdmPeakTime, vancoTdmPeakElapsedHours, vancoTdmInfusionHours]);
+
+  const effectiveEarlySampleHours = useMemo(() => {
+    if (earlyTimeMode === 'clock') {
+      const diff = computeElapsedHoursFromClock(earlyDoseTime, earlySampleTime, 0);
+      if (diff !== null && diff > 0) return diff;
+    }
+    return parseFloat(earlyTimeSinceDose) || 12;
+  }, [earlyTimeMode, earlyDoseTime, earlySampleTime, earlyTimeSinceDose]);
+
+  const vancoTimedTDM = useMemo<VancoTimedTDMResult | null>(() => {
     const level = parseFloat(measuredVancoLevel);
-    if (!level || isNaN(level)) return null;
-    return adjustVancoDose(
-      parseFloat(currentVancoDose) || 0,
-      parseFloat(currentVancoInterval) || 0,
-      level,
-      vancoTargetMidpoint
-    );
-  }, [measuredVancoLevel, currentVancoDose, currentVancoInterval, vancoTargetMidpoint]);
+    const curDose = parseFloat(currentVancoDose) || 0;
+    const curTau = parseFloat(currentVancoInterval) || 0;
+    if (!level || isNaN(level) || level <= 0 || curDose <= 0 || curTau <= 0) return null;
+
+    const vd = parseFloat(manualVd) || popPK.vd;
+    const tInf = parseFloat(vancoTdmInfusionHours) || parseFloat(vancoInfusionTime) || 1;
+    const targetMin = vancoTargetTroughRange === 'high' ? 15 : 10;
+    const targetMax = vancoTargetTroughRange === 'high' ? 20 : 15;
+    const [aucMinStr, aucMaxStr] = vancoTdmAucTarget.split('-');
+    const aucTargetMin = parseFloat(aucMinStr) || 400;
+    const aucTargetMax = parseFloat(aucMaxStr) || 600;
+    const parsedPeak = vancoUseTwoLevel ? parseFloat(vancoTdmPeakLevel) : NaN;
+
+    return adjustVancoTimedTDM({
+      currentDose: curDose,
+      currentInterval: curTau,
+      measuredLevel: level,
+      sampleTimeHours: effectiveVancoTdmSampleHours,
+      tInfusion: tInf,
+      vd,
+      targetMin,
+      targetMax,
+      mic: parseFloat(vancoMic) || 1,
+      targetMode: vancoTdmMode,
+      aucTargetMin,
+      aucTargetMax,
+      peakLevel: !isNaN(parsedPeak) && parsedPeak > 0 ? parsedPeak : undefined,
+      peakSampleTimeHours: !isNaN(parsedPeak) && parsedPeak > 0 ? effectiveVancoTdmPeakHours : undefined,
+      patientWeightKg: patientData.weight
+    });
+  }, [
+    measuredVancoLevel,
+    currentVancoDose,
+    currentVancoInterval,
+    manualVd,
+    popPK.vd,
+    vancoTdmInfusionHours,
+    vancoInfusionTime,
+    vancoTargetTroughRange,
+    effectiveVancoTdmSampleHours,
+    vancoMic,
+    vancoTdmMode,
+    vancoTdmAucTarget,
+    vancoUseTwoLevel,
+    vancoTdmPeakLevel,
+    effectiveVancoTdmPeakHours,
+    patientData.weight
+  ]);
+
+  const activeTdmRegimen = useMemo(() => {
+    if (!vancoTimedTDM) return null;
+    if (selectedTdmIntervalOverride !== null) {
+      const found = vancoTimedTDM.alternativeRegimens.find(r => r.interval === selectedTdmIntervalOverride);
+      if (found) return found;
+    }
+    return {
+      dose: vancoTimedTDM.recommendedDose,
+      interval: vancoTimedTDM.recommendedInterval,
+      totalDailyDose: vancoTimedTDM.recommendedDose * (24 / vancoTimedTDM.recommendedInterval),
+      predictedCmin: vancoTimedTDM.predictedNewCmin,
+      predictedCmax: vancoTimedTDM.predictedNewCmax,
+      predictedAuc24: vancoTimedTDM.predictedNewAuc24,
+      predictedAucMic: vancoTimedTDM.predictedNewAucMic,
+      inTroughTarget: vancoTimedTDM.predictedNewCmin >= (vancoTargetTroughRange === 'high' ? 15 : 10) && vancoTimedTDM.predictedNewCmin <= (vancoTargetTroughRange === 'high' ? 20 : 15),
+      inAucTarget: vancoTimedTDM.predictedNewAucMic >= vancoTimedTDM.aucTargetMin && vancoTimedTDM.predictedNewAucMic <= vancoTimedTDM.aucTargetMax,
+      suitabilityLabel: 'Recommended'
+    };
+  }, [vancoTimedTDM, selectedTdmIntervalOverride, vancoTargetTroughRange]);
+
+  const vancoAdjustment = useMemo(() => {
+    if (!activeTdmRegimen) return null;
+    return {
+      dose: activeTdmRegimen.dose,
+      interval: activeTdmRegimen.interval,
+      ratio: 1,
+      calculatedRawDose: activeTdmRegimen.dose
+    };
+  }, [activeTdmRegimen]);
 
   const vancoAdjustedAdmin = useMemo(() => vancoAdjustment ? getVancoAdminDetails(vancoAdjustment.dose, isVancoHD, false) : null, [vancoAdjustment, isVancoHD]);
 
@@ -250,22 +368,24 @@ export default function App() {
 
   // Vancomycin TDM PK & Predictions (mg/L based)
   const vancoTdmPK = useMemo(() => {
+    if (vancoTimedTDM) return vancoTimedTDM.pk;
     const level = parseFloat(measuredVancoLevel);
     if (!level || isNaN(level) || !currentVancoDose || !currentVancoInterval) return null;
     
     const vd = parseFloat(manualVd) || popPK.vd;
-    
     const ke = calculateVancoKeFromTrough(
       parseFloat(currentVancoDose),
       parseFloat(currentVancoInterval),
       vd,
-      level
+      level,
+      parseFloat(vancoTdmInfusionHours) || 1,
+      effectiveVancoTdmSampleHours
     );
     
     const cl = ke * vd;
     const halfLife = 0.693 / ke;
     return { vd, cl, ke, halfLife };
-  }, [measuredVancoLevel, currentVancoDose, currentVancoInterval, popPK.vd, manualVd]);
+  }, [vancoTimedTDM, measuredVancoLevel, currentVancoDose, currentVancoInterval, popPK.vd, manualVd, vancoTdmInfusionHours, effectiveVancoTdmSampleHours]);
 
   const vancoTdmPredictions = useMemo(() => {
     if (!vancoTdmPK || !vancoAdjustment) return null;
@@ -273,10 +393,10 @@ export default function App() {
       vancoAdjustment.dose,
       vancoAdjustment.interval,
       vancoTdmPK,
-      parseFloat(vancoInfusionTime) || 1,
+      parseFloat(vancoTdmInfusionHours) || parseFloat(vancoInfusionTime) || 1,
       parseFloat(vancoMic) || 1
     );
-  }, [vancoTdmPK, vancoAdjustment, vancoInfusionTime, vancoMic]);
+  }, [vancoTdmPK, vancoAdjustment, vancoTdmInfusionHours, vancoInfusionTime, vancoMic]);
 
   // Random PK Result (mg/L based)
   const randomPKResult = useMemo(() => {
@@ -298,7 +418,7 @@ export default function App() {
     const dose = vancoAdjustment ? vancoAdjustment.dose : vancoMaintenance.dose;
     const interval = vancoAdjustment ? vancoAdjustment.interval : vancoMaintenance.interval;
     const doseNum = parseInt(earlyDoseNumber) || 1;
-    const timeSince = parseFloat(earlyTimeSinceDose) || 12;
+    const timeSince = effectiveEarlySampleHours;
     const tinf = parseFloat(vancoInfusionTime) || 1;
     
     const vd = popPK.vd;
@@ -317,7 +437,7 @@ export default function App() {
     const halfLife = 0.693 / ke;
     
     return { vd, cl, ke, halfLife };
-  }, [earlyMeasuredLevel, vancoAdjustment, vancoMaintenance, earlyDoseNumber, earlyTimeSinceDose, vancoInfusionTime, popPK.vd]);
+  }, [earlyMeasuredLevel, vancoAdjustment, vancoMaintenance, earlyDoseNumber, effectiveEarlySampleHours, vancoInfusionTime, popPK.vd]);
 
   const earlySSPredictions = useMemo(() => {
     if (!earlyPKResult) return null;
@@ -341,11 +461,11 @@ export default function App() {
       dose,
       interval,
       parseInt(earlyDoseNumber) || 1,
-      parseFloat(earlyTimeSinceDose) || 12,
+      effectiveEarlySampleHours,
       pk,
       parseFloat(vancoInfusionTime) || 1
     );
-  }, [earlyPKResult, vancoTdmPK, popPK, vancoAdjustment, vancoMaintenance, earlyDoseNumber, earlyTimeSinceDose, vancoInfusionTime]);
+  }, [earlyPKResult, vancoTdmPK, popPK, vancoAdjustment, vancoMaintenance, earlyDoseNumber, effectiveEarlySampleHours, vancoInfusionTime]);
 
   // Sync Fluconazole indication to dosage base and targets
   useEffect(() => {
@@ -858,8 +978,9 @@ export default function App() {
                               <SelectItem value="1">1 hour (Standard for ≤ 1000 mg)</SelectItem>
                               <SelectItem value="1.5">1.5 hours</SelectItem>
                               <SelectItem value="2">2 hours (Standard for 1500–2000 mg)</SelectItem>
-                              <SelectItem value="3">3 hours</SelectItem>
-                              <SelectItem value="4">4 hours (Extended Infusion)</SelectItem>
+                              <SelectItem value="3">3 hours (1500–2500 mg)</SelectItem>
+                              <SelectItem value="4">4 hours (2000–3000 mg / Extended)</SelectItem>
+                              <SelectItem value="5">5 hours (Standard for 2250–3000 mg)</SelectItem>
                               <SelectItem value="6">6 hours (Extended Infusion)</SelectItem>
                               <SelectItem value="24">24 hours (Continuous Infusion)</SelectItem>
                             </SelectContent>
@@ -880,7 +1001,7 @@ export default function App() {
                             </Badge>
                             {vancoLoading.isCapped && (
                               <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-[10px] font-bold">
-                                Capped at 2g
+                                Capped at 3g
                               </Badge>
                             )}
                           </div>
@@ -890,7 +1011,7 @@ export default function App() {
                             {vancoLoading.dose} <span className="text-sm font-bold text-slate-500">mg</span>
                           </p>
                           <p className="text-[11px] text-slate-500 font-bold mt-0.5">
-                            Given once as first dose • Single dose capped at 2g (2000 mg)
+                            Given once as first dose • Single dose capped at 3g (3000 mg)
                           </p>
                         </div>
                         <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 font-medium">
@@ -915,8 +1036,8 @@ export default function App() {
                           </p>
                           <p className="text-[11px] text-slate-500 font-bold mt-0.5">
                             {isAnuric || isVancoHD 
-                              ? 'Administer post-HD on dialysis days • Single dose capped at 2g (2000 mg)' 
-                              : `Target range: ${(patientData.weight * 15).toFixed(0)}–${Math.min(2000, patientData.weight * 20).toFixed(0)} mg/dose (15–20 mg/kg) • Capped at 2g • Total: ${(vancoMaintenance.dose * (24 / (vancoMaintenance.interval || 24))).toFixed(0)} mg/day`}
+                              ? 'Administer post-HD on dialysis days • Single dose capped at 3g (3000 mg)' 
+                              : `Target range: ${(patientData.weight * 15).toFixed(0)}–${Math.min(3000, patientData.weight * 20).toFixed(0)} mg/dose (15–20 mg/kg) • Capped at 3g • Total: ${(vancoMaintenance.dose * (24 / (vancoMaintenance.interval || 24))).toFixed(0)} mg/day`}
                           </p>
                         </div>
                         <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 font-medium flex items-center justify-between">
@@ -954,8 +1075,8 @@ export default function App() {
                         </div>
                         <div className="p-2.5 bg-white/80 rounded-xl border border-amber-200/60 space-y-0.5">
                           <span className="text-[10px] font-black uppercase text-blue-800 block">Loading Dose Rule</span>
-                          <p className="font-bold text-slate-800">1g – 2g in 400 mL NS</p>
-                          <p className="text-[11px] text-slate-500">Infuse over 3–4 hours (≤ 10 mg/min) to avoid Red Man syndrome.</p>
+                          <p className="font-bold text-slate-800">1g–2g in 400 mL · &gt;2g–3g in 500 mL NS</p>
+                          <p className="text-[11px] text-slate-500">Infuse over 3–5 hours (≤ 10 mg/min) to avoid Red Man syndrome.</p>
                         </div>
                         <div className="p-2.5 bg-white/80 rounded-xl border border-amber-200/60 space-y-0.5">
                           <span className="text-[10px] font-black uppercase text-purple-800 block">Hemodialysis (HD) Rule</span>
@@ -1088,75 +1209,380 @@ export default function App() {
                 {vancoSubTab === 'tdm' && (
                   <div className="space-y-6">
                     {/* TDM Adjustment Card */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <Card className="border-slate-200 shadow-sm bg-white">
-                        <CardHeader className="py-4 flex flex-row items-center justify-between border-b border-slate-100">
-                          <CardTitle className="text-sm font-black text-slate-900 flex items-center gap-2">
-                            <ArrowRightLeft className="w-4 h-4 text-purple-600" />
-                            Steady-State TDM Adjustment
-                          </CardTitle>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            onClick={() => copyToClipboard(`Patient: ${age}y, ${weight}kg, CrCl: ${crcl.toFixed(1)}mL/min\nAdjusted Vanco Dose: ${vancoAdjustment?.dose}mg q${vancoAdjustment?.interval}h\nMeasured Trough: ${measuredVancoLevel} mg/L\nTarget: ${vancoTargetTroughRange === 'high' ? '15-20' : '10-15'} mg/L`)}
-                            className="h-8 w-8 text-slate-400 hover:text-purple-600"
-                          >
-                            {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-slate-400" />}
-                          </Button>
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                      <Card className="lg:col-span-7 border-slate-200 shadow-sm bg-white">
+                        <CardHeader className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100">
+                          <div>
+                            <CardTitle className="text-sm font-black text-slate-900 flex items-center gap-2">
+                              <ArrowRightLeft className="w-4 h-4 text-purple-600" />
+                              AUC &amp; Timed-Sample TDM Adjustment
+                            </CardTitle>
+                            <CardDescription className="text-[11px] text-slate-500 font-medium mt-0.5">
+                              {vancoTdmMode === 'auc'
+                                ? 'Optimizes regimen to hit AUC24/MIC target (400–600) with trough safety check (max 3g/dose)'
+                                : 'Back-calculates individual Ke & true trough to hit target trough window (max 3g/dose)'}
+                            </CardDescription>
+                          </div>
+                          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                            <div className="flex items-center gap-1 p-0.5 bg-slate-100 border border-slate-200 rounded-lg">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setVancoTdmMode('auc');
+                                  setSelectedTdmIntervalOverride(null);
+                                }}
+                                className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                                  vancoTdmMode === 'auc' ? 'bg-purple-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                              >
+                                AUC-Guided (400–600)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setVancoTdmMode('trough');
+                                  setSelectedTdmIntervalOverride(null);
+                                }}
+                                className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                                  vancoTdmMode === 'trough' ? 'bg-purple-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                              >
+                                Trough-Guided
+                              </button>
+                            </div>
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              onClick={() => copyToClipboard(`Patient: ${age}y, ${weight}kg, CrCl: ${crcl.toFixed(1)}mL/min\nCurrent Regimen: ${currentVancoDose}mg q${currentVancoInterval}h (${vancoTdmInfusionHours}h inf) | MIC: ${vancoMic} mg/L\nMethod: ${vancoTimedTDM?.calculationMethod === 'two_level_sawchuk_zaske' ? '2-Level Sawchuk-Zaske + Trapezoidal AUC' : '1-Level Timed PK'}\nMeasured Level: ${measuredVancoLevel} mg/L at ${effectiveVancoTdmSampleHours.toFixed(2)}h${vancoUseTwoLevel && vancoTdmPeakLevel ? ` | Peak: ${vancoTdmPeakLevel} mg/L at ${effectiveVancoTdmPeakHours.toFixed(2)}h` : ''}\nExtrapolated Trough: ${vancoTimedTDM ? vancoTimedTDM.extrapolatedTrough.toFixed(1) : '—'} mg/L | T½: ${vancoTdmPK ? vancoTdmPK.halfLife.toFixed(1) : '—'}h | Vd: ${vancoTdmPK ? vancoTdmPK.vd.toFixed(1) : '—'}L | Cl: ${vancoTdmPK ? vancoTdmPK.cl.toFixed(2) : '—'}L/h | AUC24/MIC: ${vancoTimedTDM ? vancoTimedTDM.currentAucMic.toFixed(0) : '—'}\nAdjusted Vanco Regimen (${vancoTdmMode === 'auc' ? `AUC ${vancoTdmAucTarget}` : `Trough ${vancoTargetTroughRange === 'high' ? '15-20' : '10-15'}`}): ${vancoAdjustment?.dose}mg q${vancoAdjustment?.interval}h (Pred AUC/MIC: ${activeTdmRegimen ? activeTdmRegimen.predictedAucMic.toFixed(0) : '—'}, Pred Trough: ${activeTdmRegimen ? activeTdmRegimen.predictedCmin.toFixed(1) : '—'} mg/L)`)}
+                              className="h-8 w-8 text-slate-400 hover:text-purple-600 shrink-0"
+                            >
+                              {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-slate-400" />}
+                            </Button>
+                          </div>
                         </CardHeader>
                         <CardContent className="space-y-4 pt-4">
-                          <div className="grid grid-cols-2 gap-3">
+                          <div className="grid grid-cols-3 gap-3">
                             <div className="space-y-1">
                               <Label className="text-xs font-bold text-slate-600">Current Dose (mg)</Label>
                               <Input 
                                 type="number" 
-                                className="h-9 text-xs font-bold border-slate-200" 
+                                step="250"
+                                className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200" 
                                 value={currentVancoDose} 
-                                onChange={(e) => setCurrentVancoDose(e.target.value)} 
+                                onChange={(e) => {
+                                  setCurrentVancoDose(e.target.value);
+                                  setSelectedTdmIntervalOverride(null);
+                                }} 
                               />
                             </div>
                             <div className="space-y-1">
-                              <Label className="text-xs font-bold text-slate-600">Current Interval (h)</Label>
+                              <Label className="text-xs font-bold text-slate-600">Interval τ (h)</Label>
                               <Input 
                                 type="number" 
-                                className="h-9 text-xs font-bold border-slate-200" 
+                                className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200" 
                                 value={currentVancoInterval} 
-                                onChange={(e) => setCurrentVancoInterval(e.target.value)} 
+                                onChange={(e) => {
+                                  setCurrentVancoInterval(e.target.value);
+                                  setSelectedTdmIntervalOverride(null);
+                                }} 
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs font-bold text-slate-600">Infusion (h)</Label>
+                              <Input 
+                                type="number" 
+                                step="0.5"
+                                min="0.5"
+                                className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200" 
+                                value={vancoTdmInfusionHours} 
+                                onChange={(e) => setVancoTdmInfusionHours(e.target.value)} 
                               />
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                             <div className="space-y-1">
-                              <Label className="text-xs font-bold text-slate-600">Measured Trough (mg/L)</Label>
+                              <Label className="text-xs font-bold text-slate-600">Measured Trough / Level (mg/L)</Label>
                               <Input 
                                 type="number" 
                                 step="0.1"
                                 placeholder="e.g. 12.5" 
-                                className={`h-9 text-xs font-bold border-slate-200 ${parseFloat(measuredVancoLevel) > 20 ? 'border-red-400 bg-red-50 text-red-900' : ''}`}
+                                className={`h-9 text-xs font-mono tabular-nums font-bold border-slate-200 ${parseFloat(measuredVancoLevel) > 20 ? 'border-red-400 bg-red-50 text-red-900' : ''}`}
                                 value={measuredVancoLevel} 
                                 onChange={(e) => setMeasuredVancoLevel(e.target.value)}
                               />
                             </div>
+                            {vancoTdmMode === 'auc' ? (
+                              <div className="space-y-1">
+                                <Label className="text-xs font-bold text-slate-600">AUC24 / MIC Target</Label>
+                                <Select value={vancoTdmAucTarget} onValueChange={(v: '400-600' | '450-550' | '400-500') => { setVancoTdmAucTarget(v); setSelectedTdmIntervalOverride(null); }}>
+                                  <SelectTrigger className="h-9 text-xs font-bold border-slate-200">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="400-600">400 – 600 (ASHP/IDSA Std)</SelectItem>
+                                    <SelectItem value="450-550">450 – 550 (Focused Midpoint)</SelectItem>
+                                    <SelectItem value="400-500">400 – 500 (Low AKI Risk)</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            ) : (
+                              <div className="space-y-1">
+                                <Label className="text-xs font-bold text-slate-600">Trough Target Range</Label>
+                                <Select value={vancoTargetTroughRange} onValueChange={(v: 'standard' | 'high') => { setVancoTargetTroughRange(v); setSelectedTdmIntervalOverride(null); }}>
+                                  <SelectTrigger className="h-9 text-xs font-bold border-slate-200">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="standard">10 – 15 mg/L (Std)</SelectItem>
+                                    <SelectItem value="high">15 – 20 mg/L (High)</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            )}
                             <div className="space-y-1">
-                              <Label className="text-xs font-bold text-slate-600">Target Range</Label>
-                              <Select value={vancoTargetTroughRange} onValueChange={(v: 'standard' | 'high') => setVancoTargetTroughRange(v)}>
-                                <SelectTrigger className="h-9 text-xs font-bold border-slate-200">
+                              <Label className="text-xs font-bold text-slate-600">Pathogen MIC (mg/L)</Label>
+                              <Select value={vancoMic} onValueChange={(v) => { setVancoMic(v); setSelectedTdmIntervalOverride(null); }}>
+                                <SelectTrigger className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200">
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="standard">10 – 15 mg/L (Std)</SelectItem>
-                                  <SelectItem value="high">15 – 20 mg/L (High)</SelectItem>
+                                  <SelectItem value="0.5">0.5 mg/L</SelectItem>
+                                  <SelectItem value="1">1.0 mg/L (Standard)</SelectItem>
+                                  <SelectItem value="1.5">1.5 mg/L</SelectItem>
+                                  <SelectItem value="2">2.0 mg/L (High MIC)</SelectItem>
                                 </SelectContent>
                               </Select>
                             </div>
                           </div>
 
+                          {/* Sample Collection Timing Block */}
+                          {!isVancoHD && (
+                            <div className="p-3.5 bg-slate-50/90 rounded-xl border border-slate-200 space-y-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <Label className="text-xs font-bold text-slate-800">Sample Collection Timing</Label>
+                                  <p className="text-[11px] text-slate-500">
+                                    Elapsed: <span className="font-mono tabular-nums font-bold text-slate-800">{effectiveVancoTdmSampleHours.toFixed(2)} h</span> post-dose start
+                                    {' · '}
+                                    {effectiveVancoTdmSampleHours < (parseFloat(currentVancoInterval) || 12)
+                                      ? `${((parseFloat(currentVancoInterval) || 12) - effectiveVancoTdmSampleHours).toFixed(2)} h before next dose`
+                                      : effectiveVancoTdmSampleHours === (parseFloat(currentVancoInterval) || 12)
+                                      ? 'Exact trough (at τ)'
+                                      : `${(effectiveVancoTdmSampleHours - (parseFloat(currentVancoInterval) || 12)).toFixed(2)} h delayed past τ`}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-1 p-0.5 bg-slate-200/70 rounded-lg shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => setVancoTdmTimeMode('clock')}
+                                    className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                                      vancoTdmTimeMode === 'clock' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                                    }`}
+                                  >
+                                    Clock Time
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setVancoTdmElapsedHours(effectiveVancoTdmSampleHours.toString());
+                                      setVancoTdmTimeMode('hours');
+                                    }}
+                                    className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                                      vancoTdmTimeMode === 'hours' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                                    }`}
+                                  >
+                                    Hours Post-Dose
+                                  </button>
+                                </div>
+                              </div>
+
+                              {vancoTdmTimeMode === 'clock' ? (
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px] font-semibold text-slate-600">Dose Start Time</Label>
+                                    <Input
+                                      type="time"
+                                      value={vancoTdmDoseTime}
+                                      onChange={(e) => setVancoTdmDoseTime(e.target.value)}
+                                      className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200 bg-white"
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px] font-semibold text-slate-600">Sample Drawn Time</Label>
+                                    <Input
+                                      type="time"
+                                      value={vancoTdmSampleTime}
+                                      onChange={(e) => setVancoTdmSampleTime(e.target.value)}
+                                      className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200 bg-white"
+                                    />
+                                  </div>
+                                  <div className="flex items-center justify-between sm:justify-start gap-2 h-9 px-2.5 bg-white rounded-lg border border-slate-200">
+                                    <Label htmlFor="tdm-extra-day" className="text-[11px] font-semibold text-slate-600 cursor-pointer whitespace-nowrap">+24h (q36–48h)</Label>
+                                    <Switch id="tdm-extra-day" checked={vancoTdmExtraDay} onCheckedChange={setVancoTdmExtraDay} />
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-2">
+                                  <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+                                    <Input
+                                      type="number"
+                                      step="0.25"
+                                      min="0.5"
+                                      value={vancoTdmElapsedHours}
+                                      onChange={(e) => setVancoTdmElapsedHours(e.target.value)}
+                                      className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200 bg-white sm:w-36"
+                                      placeholder="Hours since start"
+                                    />
+                                    <div className="flex flex-wrap gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => setVancoTdmElapsedHours(Math.max(1, (parseFloat(currentVancoInterval) || 12) - 0.5).toString())}
+                                        className="px-2.5 py-1.5 text-[11px] font-bold bg-white border border-slate-200 rounded-md hover:bg-slate-100 text-slate-700 whitespace-nowrap shrink-0"
+                                      >
+                                        30m pre-dose ({Math.max(1, (parseFloat(currentVancoInterval) || 12) - 0.5)}h)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setVancoTdmElapsedHours(Math.max(1, (parseFloat(currentVancoInterval) || 12) - 1).toString())}
+                                        className="px-2.5 py-1.5 text-[11px] font-bold bg-white border border-slate-200 rounded-md hover:bg-slate-100 text-slate-700 whitespace-nowrap shrink-0"
+                                      >
+                                        1h pre-dose ({Math.max(1, (parseFloat(currentVancoInterval) || 12) - 1)}h)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setVancoTdmElapsedHours((parseFloat(currentVancoInterval) || 12).toString())}
+                                        className="px-2.5 py-1.5 text-[11px] font-bold bg-white border border-slate-200 rounded-md hover:bg-slate-100 text-slate-700 whitespace-nowrap shrink-0"
+                                      >
+                                        At τ ({parseFloat(currentVancoInterval) || 12}h)
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {vancoTimedTDM?.samplePhaseWarning && (
+                                <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 font-medium flex items-start gap-2">
+                                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                  <span>{vancoTimedTDM.samplePhaseWarning}</span>
+                                </div>
+                              )}
+
+                              {/* Optional 2nd Peak Level Section for Exact 2-Level Vd & Trapezoidal AUC */}
+                              <div className="pt-2.5 border-t border-slate-200/80 space-y-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div>
+                                    <Label htmlFor="vanco-two-level" className="text-xs font-bold text-slate-800 cursor-pointer">
+                                      Add 2nd Peak Level (Optional)
+                                    </Label>
+                                    <p className="text-[10px] text-slate-500">
+                                      Derives individualized Vd &amp; trapezoidal AUC24 via Sawchuk-Zaske 2-point kinetics
+                                    </p>
+                                  </div>
+                                  <Switch
+                                    id="vanco-two-level"
+                                    checked={vancoUseTwoLevel}
+                                    onCheckedChange={(checked) => {
+                                      setVancoUseTwoLevel(checked);
+                                      setSelectedTdmIntervalOverride(null);
+                                    }}
+                                  />
+                                </div>
+
+                                {vancoUseTwoLevel && (
+                                  <div className="p-3 bg-white rounded-lg border border-slate-200 space-y-2.5">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="text-[11px] font-bold text-slate-700">
+                                        Peak Draw: <span className="font-mono tabular-nums text-slate-900">{effectiveVancoTdmPeakHours.toFixed(2)} h</span> post-dose start
+                                      </span>
+                                      <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-md shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => setVancoTdmPeakTimeMode('clock')}
+                                          className={`px-2 py-0.5 text-[10px] font-bold rounded transition-colors whitespace-nowrap shrink-0 ${
+                                            vancoTdmPeakTimeMode === 'clock' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                                          }`}
+                                        >
+                                          Clock Time
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setVancoTdmPeakElapsedHours(effectiveVancoTdmPeakHours.toString());
+                                            setVancoTdmPeakTimeMode('hours');
+                                          }}
+                                          className={`px-2 py-0.5 text-[10px] font-bold rounded transition-colors whitespace-nowrap shrink-0 ${
+                                            vancoTdmPeakTimeMode === 'hours' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                                          }`}
+                                        >
+                                          Hours Post-Dose
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-end">
+                                      <div className="space-y-1">
+                                        <Label className="text-[11px] font-semibold text-slate-600">Measured Peak (mg/L)</Label>
+                                        <Input
+                                          type="number"
+                                          step="0.1"
+                                          placeholder="e.g. 28.5"
+                                          value={vancoTdmPeakLevel}
+                                          onChange={(e) => setVancoTdmPeakLevel(e.target.value)}
+                                          className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200"
+                                        />
+                                      </div>
+                                      {vancoTdmPeakTimeMode === 'clock' ? (
+                                        <div className="space-y-1">
+                                          <Label className="text-[11px] font-semibold text-slate-600">Peak Drawn Time</Label>
+                                          <Input
+                                            type="time"
+                                            value={vancoTdmPeakTime}
+                                            onChange={(e) => setVancoTdmPeakTime(e.target.value)}
+                                            className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200"
+                                          />
+                                        </div>
+                                      ) : (
+                                        <div className="space-y-1">
+                                          <div className="flex items-center justify-between">
+                                            <Label className="text-[11px] font-semibold text-slate-600">Peak Time (h)</Label>
+                                            <button
+                                              type="button"
+                                              onClick={() => setVancoTdmPeakElapsedHours(((parseFloat(vancoTdmInfusionHours) || 1) + 1).toString())}
+                                              className="text-[10px] font-bold text-purple-600 hover:underline whitespace-nowrap shrink-0"
+                                            >
+                                              1h post-inf ({(parseFloat(vancoTdmInfusionHours) || 1) + 1}h)
+                                            </button>
+                                          </div>
+                                          <Input
+                                            type="number"
+                                            step="0.25"
+                                            min="0.5"
+                                            value={vancoTdmPeakElapsedHours}
+                                            onChange={(e) => setVancoTdmPeakElapsedHours(e.target.value)}
+                                            className="h-9 text-xs font-mono tabular-nums font-bold border-slate-200"
+                                          />
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {vancoTimedTDM?.twoLevelNotice && (
+                                      <div className="p-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-900 font-medium flex items-start gap-1.5">
+                                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                        <span>{vancoTimedTDM.twoLevelNotice}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
                           {/* Hemodialysis Mode Indicator / Toggle */}
                           <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                             <div className="space-y-0.5">
                               <Label className="text-xs font-bold text-slate-800">Hemodialysis (HD) Mode</Label>
-                              <p className="text-[10px] text-slate-500">Apply HD-specific dose adjustment rules</p>
+                              <p className="text-[10px] text-slate-500">Apply HD-specific dose adjustment rules (up to 3g)</p>
                             </div>
                             <Switch checked={isVancoHD} onCheckedChange={setIsVancoHD} />
                           </div>
@@ -1182,9 +1608,9 @@ export default function App() {
                                       WITHHOLD VANCO
                                     </p>
                                   ) : (
-                                    <p className="text-3xl font-black">
-                                      {vancoHdAdjustment.recommendedDose} <span className="text-sm font-bold">mg</span>{' '}
-                                      <span className="text-sm font-bold opacity-80">Post-HD</span>
+                                    <p className="text-3xl font-black font-mono tabular-nums">
+                                      {vancoHdAdjustment.recommendedDose} <span className="text-sm font-sans font-bold">mg</span>{' '}
+                                      <span className="text-sm font-sans font-bold opacity-80">Post-HD</span>
                                     </p>
                                   )}
                                 </div>
@@ -1215,27 +1641,76 @@ export default function App() {
                             </div>
                           )}
 
-                          {/* Standard Non-HD Adjustment Result Banner */}
+                          {/* Standard Non-HD Timed PK Adjustment Result Banner */}
                           {!isVancoHD && (
                             <AnimatePresence>
-                              {vancoAdjustment && vancoAdjustedAdmin && (
+                              {vancoAdjustment && vancoAdjustedAdmin && vancoTimedTDM && activeTdmRegimen && (
                                 <motion.div 
-                                  initial={{ opacity: 0, scale: 0.95 }}
+                                  initial={{ opacity: 0, scale: 0.98 }}
                                   animate={{ opacity: 1, scale: 1 }}
-                                  className="p-4 bg-purple-50/80 rounded-xl border border-purple-200 space-y-2"
+                                  className="p-4 bg-purple-50/80 rounded-xl border border-purple-200 space-y-3"
                                 >
-                                  <div className="flex justify-between items-center">
+                                  <div className="flex flex-wrap justify-between items-start gap-2">
                                     <div>
-                                      <p className="text-[10px] text-purple-700 font-black uppercase tracking-wider">New Recommended Dose</p>
-                                      <p className="text-3xl font-black text-purple-950">
-                                        {vancoAdjustment.dose} <span className="text-sm font-bold">mg</span>{' '}
-                                        <span className="text-xl font-bold opacity-75">q{vancoAdjustment.interval}h</span>
+                                      <p className="text-[10px] text-purple-700 font-black uppercase tracking-wider">
+                                        {selectedTdmIntervalOverride !== null
+                                          ? 'Selected Adjusted Regimen'
+                                          : vancoTimedTDM.targetMode === 'auc'
+                                          ? 'AUC-Guided Optimal Regimen'
+                                          : 'Trough-Guided Optimal Regimen'}
+                                      </p>
+                                      <p className="text-3xl font-black font-mono tabular-nums text-purple-950">
+                                        {vancoAdjustment.dose} <span className="text-sm font-sans font-bold">mg</span>{' '}
+                                        <span className="text-xl font-bold opacity-80">q{vancoAdjustment.interval}h</span>
+                                      </p>
+                                      <p className="text-[11px] text-purple-800/80 font-medium mt-0.5">
+                                        {vancoTimedTDM.calculationMethod === 'two_level_sawchuk_zaske'
+                                          ? '2-Level Sawchuk-Zaske + Trapezoidal AUC'
+                                          : '1-Level Timed PK'}
+                                        {' · '}
+                                        Target Daily Dose ≈ <span className="font-mono tabular-nums font-bold">{vancoTimedTDM.exactTargetDailyDose} mg/d</span>
                                       </p>
                                     </div>
-                                    <Badge className="bg-purple-600 text-white text-[10px] font-black border-none">
-                                      Target Midpoint: {vancoTargetMidpoint} mg/L
-                                    </Badge>
+                                    <div className="text-right">
+                                      <span className="text-[11px] font-bold text-purple-900 block">
+                                        {vancoTimedTDM.targetMode === 'auc'
+                                          ? `Target AUC/MIC ${vancoTimedTDM.aucTargetMin}–${vancoTimedTDM.aucTargetMax}`
+                                          : `Target Trough ${vancoTargetTroughRange === 'high' ? '15–20' : '10–15'} mg/L`}
+                                      </span>
+                                      {selectedTdmIntervalOverride !== null && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setSelectedTdmIntervalOverride(null)}
+                                          className="text-[11px] font-bold text-purple-700 hover:underline"
+                                        >
+                                          Reset to auto-optimal
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
+
+                                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-purple-200/80 text-xs">
+                                    <div>
+                                      <span className="text-[10px] text-purple-700 font-bold uppercase block">Pred. AUC24/MIC</span>
+                                      <span className={`font-mono tabular-nums font-black ${activeTdmRegimen.predictedAucMic >= vancoTimedTDM.aucTargetMin && activeTdmRegimen.predictedAucMic <= vancoTimedTDM.aucTargetMax ? 'text-emerald-700' : 'text-purple-950'}`}>
+                                        {activeTdmRegimen.predictedAucMic.toFixed(0)}
+                                      </span>
+                                      <span className="text-[10px] text-purple-700/80 block font-mono tabular-nums">
+                                        AUC24: {activeTdmRegimen.predictedAuc24.toFixed(0)}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px] text-purple-700 font-bold uppercase block">Pred. Trough</span>
+                                      <span className={`font-mono tabular-nums font-black ${activeTdmRegimen.predictedCmin > 20 ? 'text-amber-700' : 'text-purple-950'}`}>
+                                        {activeTdmRegimen.predictedCmin.toFixed(1)} mg/L
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px] text-purple-700 font-bold uppercase block">Pred. 1h Peak</span>
+                                      <span className="font-mono tabular-nums font-black text-purple-950">{activeTdmRegimen.predictedCmax.toFixed(1)} mg/L</span>
+                                    </div>
+                                  </div>
+
                                   <div className="pt-2 border-t border-purple-200 text-xs text-purple-900 font-bold">
                                     Dilute in {vancoAdjustedAdmin.diluent}, infuse over {vancoAdjustedAdmin.time}
                                   </div>
@@ -1246,47 +1721,171 @@ export default function App() {
                         </CardContent>
                       </Card>
 
-                      {/* Patient-Specific Pharmacokinetic Output */}
-                      <Card className="border-slate-200 shadow-sm bg-white">
-                        <CardHeader className="py-4 bg-slate-50/80 border-b border-slate-100">
+                      {/* Patient-Specific Pharmacokinetic Output & True Trough Extrapolation */}
+                      <Card className="lg:col-span-5 border-slate-200 shadow-sm bg-white">
+                        <CardHeader className="py-4 bg-slate-50/80 border-b border-slate-100 flex flex-row items-center justify-between gap-2">
                           <CardTitle className="text-sm font-black text-slate-900 flex items-center gap-2">
                             <Activity className="w-4 h-4 text-indigo-600" />
-                            Patient-Specific Kinetic Parameters
+                            Patient-Specific PK &amp; Current Exposure
                           </CardTitle>
+                          {vancoTimedTDM && (
+                            <span className="text-[10px] font-bold text-indigo-700">
+                              {vancoTimedTDM.calculationMethod === 'two_level_sawchuk_zaske' ? '2-Level Exact' : '1-Level Timed'}
+                            </span>
+                          )}
                         </CardHeader>
-                        <CardContent className="p-5">
-                          {vancoTdmPK ? (
-                            <div className="grid grid-cols-2 gap-3">
-                              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">Elim. Rate (Ke)</p>
-                                <p className="text-2xl font-black text-indigo-900">{vancoTdmPK.ke.toFixed(4)}</p>
-                                <p className="text-[9px] text-slate-400 font-bold">h⁻¹</p>
+                        <CardContent className="p-5 space-y-4">
+                          {vancoTdmPK && vancoTimedTDM ? (
+                            <>
+                              <div className="p-3.5 bg-indigo-50/60 rounded-xl border border-indigo-200 flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-[10px] text-indigo-700 font-black uppercase tracking-wider">
+                                    Current AUC24 / MIC
+                                  </p>
+                                  <p className={`text-2xl font-black font-mono tabular-nums mt-0.5 ${
+                                    vancoTimedTDM.currentAucMic >= vancoTimedTDM.aucTargetMin && vancoTimedTDM.currentAucMic <= vancoTimedTDM.aucTargetMax
+                                      ? 'text-emerald-700'
+                                      : vancoTimedTDM.currentAucMic > vancoTimedTDM.aucTargetMax
+                                      ? 'text-rose-700'
+                                      : 'text-indigo-950'
+                                  }`}>
+                                    {vancoTimedTDM.currentAucMic.toFixed(0)} <span className="text-xs font-sans font-bold text-indigo-700">mg·h/L</span>
+                                  </p>
+                                  <p className="text-[11px] text-slate-600 mt-0.5">
+                                    AUC24: <span className="font-mono tabular-nums font-bold">{vancoTimedTDM.currentAuc24.toFixed(0)}</span> · MIC: <span className="font-mono tabular-nums font-bold">{vancoTimedTDM.mic}</span>
+                                  </p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-[10px] text-slate-500 font-black uppercase">True Trough (at τ)</p>
+                                  <p className="text-xl font-black font-mono tabular-nums text-indigo-950">
+                                    {vancoTimedTDM.extrapolatedTrough.toFixed(1)} <span className="text-xs font-sans font-bold">mg/L</span>
+                                  </p>
+                                  <p className="text-[10px] text-slate-500">
+                                    Est. Peak: <span className="font-mono tabular-nums font-bold">{vancoTimedTDM.estimatedPeak.toFixed(1)}</span> mg/L
+                                  </p>
+                                </div>
                               </div>
-                              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">Half-Life (T½)</p>
-                                <p className="text-2xl font-black text-indigo-900">{vancoTdmPK.halfLife.toFixed(1)}</p>
-                                <p className="text-[9px] text-slate-400 font-bold">hours</p>
+
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                                  <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">Elim. Rate (Ke)</p>
+                                  <p className="text-xl font-black font-mono tabular-nums text-indigo-900">{vancoTdmPK.ke.toFixed(4)}</p>
+                                  <p className="text-[9px] text-slate-400 font-bold">h⁻¹</p>
+                                </div>
+                                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                                  <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">Half-Life (T½)</p>
+                                  <p className="text-xl font-black font-mono tabular-nums text-indigo-900">{vancoTdmPK.halfLife.toFixed(1)}</p>
+                                  <p className="text-[9px] text-slate-400 font-bold">hours</p>
+                                </div>
+                                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                                  <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">Clearance (Cl)</p>
+                                  <p className="text-xl font-black font-mono tabular-nums text-indigo-900">{vancoTdmPK.cl.toFixed(2)}</p>
+                                  <p className="text-[9px] text-slate-400 font-bold">L/h</p>
+                                </div>
+                                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                                  <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">
+                                    Vol. Dist. (Vd)
+                                  </p>
+                                  <p className="text-xl font-black font-mono tabular-nums text-indigo-900">{vancoTdmPK.vd.toFixed(1)}</p>
+                                  <p className="text-[9px] text-slate-400 font-bold">
+                                    L{vancoTimedTDM.vdPerKg ? ` (${vancoTimedTDM.vdPerKg} L/kg)` : ''}
+                                  </p>
+                                </div>
                               </div>
-                              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">Clearance (Cl)</p>
-                                <p className="text-2xl font-black text-indigo-900">{vancoTdmPK.cl.toFixed(2)}</p>
-                                <p className="text-[9px] text-slate-400 font-bold">L/h</p>
-                              </div>
-                              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-wider">Vol. Dist. (Vd)</p>
-                                <p className="text-2xl font-black text-indigo-900">{vancoTdmPK.vd.toFixed(1)}</p>
-                                <p className="text-[9px] text-slate-400 font-bold">L</p>
-                              </div>
-                            </div>
+                            </>
                           ) : (
-                            <div className="h-44 flex flex-col items-center justify-center text-center p-4 text-slate-400 font-bold text-xs">
+                            <div className="h-56 flex flex-col items-center justify-center text-center p-4 text-slate-400 font-bold text-xs">
                               <Activity className="w-8 h-8 text-slate-300 mb-2" />
-                              Enter measured trough (mg/L) above to back-calculate patient-specific elimination and half-life.
+                              Enter measured level (mg/L) and sample timing to back-calculate patient-specific Ke, Vd, Cl, true trough, and AUC24/MIC.
                             </div>
                           )}
                         </CardContent>
                       </Card>
                     </div>
+
+                    {/* Alternative Interval Options Table (from Patient-Specific PK) */}
+                    {!isVancoHD && vancoTimedTDM && (
+                      <Card className="border-slate-200 shadow-sm bg-white overflow-hidden">
+                        <CardHeader className="py-3 bg-slate-50/80 border-b border-slate-100 flex flex-row items-center justify-between">
+                          <div>
+                            <CardTitle className="text-xs font-black uppercase tracking-wider text-slate-800">
+                              Individualized Dose &amp; Interval Options ({vancoTimedTDM.targetMode === 'auc' ? `AUC/MIC ${vancoTimedTDM.aucTargetMin}–${vancoTimedTDM.aucTargetMax}` : 'Trough Target'})
+                            </CardTitle>
+                            <CardDescription className="text-[11px] text-slate-500 font-medium mt-0.5">
+                              Ke = <span className="font-mono tabular-nums font-bold text-slate-700">{vancoTimedTDM.pk.ke.toFixed(4)} h⁻¹</span> · Cl = <span className="font-mono tabular-nums font-bold text-slate-700">{vancoTimedTDM.pk.cl.toFixed(2)} L/h</span> · Vd = <span className="font-mono tabular-nums font-bold text-slate-700">{vancoTimedTDM.pk.vd.toFixed(1)} L</span> · Max 3g/dose
+                            </CardDescription>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="p-0 overflow-x-auto">
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                              <tr className="bg-slate-50/60 border-b border-slate-200 text-[10px] font-black uppercase text-slate-500">
+                                <th className="py-2.5 px-3">Regimen</th>
+                                <th className="py-2.5 px-3">Daily Dose</th>
+                                <th className="py-2.5 px-3">AUC24 / MIC</th>
+                                <th className="py-2.5 px-3">Pred. Trough</th>
+                                <th className="py-2.5 px-3">Pred. Peak</th>
+                                <th className="py-2.5 px-3">Assessment</th>
+                                <th className="py-2.5 px-3 text-right">Select</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 font-mono tabular-nums">
+                              {vancoTimedTDM.alternativeRegimens.map((reg) => {
+                                const isActive = activeTdmRegimen?.interval === reg.interval && activeTdmRegimen?.dose === reg.dose;
+                                return (
+                                  <tr key={reg.interval} className={isActive ? 'bg-purple-50/70' : 'hover:bg-slate-50/70'}>
+                                    <td className="py-2.5 px-3 font-black text-slate-900">
+                                      {reg.dose >= 1000 ? `${reg.dose / 1000}g` : `${reg.dose}mg`} q{reg.interval}h
+                                    </td>
+                                    <td className="py-2.5 px-3 text-slate-600">{reg.totalDailyDose} mg/d</td>
+                                    <td className={`py-2.5 px-3 font-black ${reg.inAucTarget ? 'text-emerald-700' : 'text-slate-700'}`}>
+                                      {reg.predictedAucMic.toFixed(0)}
+                                    </td>
+                                    <td className={`py-2.5 px-3 font-bold ${reg.predictedCmin > 20 ? 'text-rose-700' : reg.inTroughTarget ? 'text-emerald-700' : 'text-slate-700'}`}>
+                                      {reg.predictedCmin.toFixed(1)} mg/L
+                                    </td>
+                                    <td className="py-2.5 px-3 text-sky-700 font-bold">{reg.predictedCmax.toFixed(1)} mg/L</td>
+                                    <td className="py-2.5 px-3 font-sans">
+                                      <span className={`text-[11px] font-bold ${
+                                        (vancoTimedTDM.targetMode === 'auc' ? reg.inAucTarget && reg.predictedCmin <= 20 : reg.inTroughTarget)
+                                          ? 'text-emerald-700'
+                                          : 'text-slate-500'
+                                      }`}>
+                                        {reg.suitabilityLabel}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right font-sans">
+                                      <Button
+                                        size="sm"
+                                        variant={isActive ? 'default' : 'outline'}
+                                        onClick={() => setSelectedTdmIntervalOverride(reg.interval)}
+                                        className={`h-7 px-2.5 text-[10px] font-black rounded-lg whitespace-nowrap shrink-0 ${
+                                          isActive ? 'bg-purple-600 hover:bg-purple-700 text-white' : 'border-slate-300 text-slate-700'
+                                        }`}
+                                      >
+                                        {isActive ? 'Active' : 'Use'}
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {/* Adjusted TDM PK Curve Visualizer */}
+                    {!isVancoHD && vancoTdmPK && vancoAdjustment && (
+                      <PkVisualizer
+                        dose={vancoAdjustment.dose}
+                        interval={vancoAdjustment.interval || 12}
+                        pk={vancoTdmPK}
+                        infusionTime={Math.max(parseFloat(vancoTdmInfusionHours) || 1, vancoAdjustment.dose > 2000 ? 3 : vancoAdjustment.dose > 1000 ? 2 : 1)}
+                        mic={parseFloat(vancoMic) || 1}
+                        targetRange={vancoTargetTroughRange}
+                      />
+                    )}
 
                     {/* Early Level Predictor (Pre-Steady State / Dose 1 or 2) */}
                     <Card className="border-indigo-200 bg-gradient-to-br from-indigo-50/40 to-white shadow-sm">
@@ -1303,9 +1902,29 @@ export default function App() {
                               </CardDescription>
                             </div>
                           </div>
-                          <Badge className="bg-indigo-600 text-white text-[10px] font-black uppercase self-start sm:self-auto">
-                            Dose 1 / 2 Solver
-                          </Badge>
+                          <div className="flex items-center gap-1 p-0.5 bg-indigo-100/80 rounded-lg self-start sm:self-auto shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setEarlyTimeMode('clock')}
+                              className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                                earlyTimeMode === 'clock' ? 'bg-white text-indigo-900 shadow-xs' : 'text-indigo-700 hover:text-indigo-900'
+                              }`}
+                            >
+                              Clock Time
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEarlyTimeSinceDose(effectiveEarlySampleHours.toString());
+                                setEarlyTimeMode('hours');
+                              }}
+                              className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                                earlyTimeMode === 'hours' ? 'bg-white text-indigo-900 shadow-xs' : 'text-indigo-700 hover:text-indigo-900'
+                              }`}
+                            >
+                              Hours Post-Dose
+                            </button>
+                          </div>
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-4 pt-4">
@@ -1324,15 +1943,39 @@ export default function App() {
                             </Select>
                           </div>
 
-                          <div className="space-y-1">
-                            <Label className="text-xs font-bold text-slate-700">Hours Since Infusion Start</Label>
-                            <Input 
-                              type="number" 
-                              value={earlyTimeSinceDose} 
-                              onChange={(e) => setEarlyTimeSinceDose(e.target.value)}
-                              className="h-9 text-xs font-bold border-indigo-200 bg-white"
-                            />
-                          </div>
+                          {earlyTimeMode === 'clock' ? (
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-xs font-bold text-slate-700">Dose Start</Label>
+                                <Input
+                                  type="time"
+                                  value={earlyDoseTime}
+                                  onChange={(e) => setEarlyDoseTime(e.target.value)}
+                                  className="h-9 text-xs font-mono tabular-nums font-bold border-indigo-200 bg-white"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-xs font-bold text-slate-700">Sample Drawn</Label>
+                                <Input
+                                  type="time"
+                                  value={earlySampleTime}
+                                  onChange={(e) => setEarlySampleTime(e.target.value)}
+                                  className="h-9 text-xs font-mono tabular-nums font-bold border-indigo-200 bg-white"
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-1">
+                              <Label className="text-xs font-bold text-slate-700">Hours Since Infusion Start</Label>
+                              <Input 
+                                type="number" 
+                                step="0.25"
+                                value={earlyTimeSinceDose} 
+                                onChange={(e) => setEarlyTimeSinceDose(e.target.value)}
+                                className="h-9 text-xs font-mono tabular-nums font-bold border-indigo-200 bg-white"
+                              />
+                            </div>
+                          )}
 
                           <div className="space-y-1">
                             <Label className="text-xs font-bold text-slate-700">Measured Level (mg/L)</Label>
@@ -1342,7 +1985,7 @@ export default function App() {
                               placeholder="e.g. 14.5"
                               value={earlyMeasuredLevel} 
                               onChange={(e) => setEarlyMeasuredLevel(e.target.value)}
-                              className="h-9 text-xs font-bold border-indigo-200 bg-white"
+                              className="h-9 text-xs font-mono tabular-nums font-bold border-indigo-200 bg-white"
                             />
                           </div>
                         </div>
@@ -1350,8 +1993,8 @@ export default function App() {
                         {/* Early Predictor Output Display */}
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
                           <div className="p-4 bg-white rounded-xl border border-indigo-200 shadow-xs space-y-1">
-                            <p className="text-[10px] text-slate-500 font-black uppercase">Predicted Level at {earlyTimeSinceDose}h</p>
-                            <p className="text-2xl font-black text-indigo-900">{earlyLevelResult.toFixed(1)} <span className="text-xs font-bold text-slate-400">mg/L</span></p>
+                            <p className="text-[10px] text-slate-500 font-black uppercase">Predicted Level at {effectiveEarlySampleHours.toFixed(1)}h</p>
+                            <p className="text-2xl font-black font-mono tabular-nums text-indigo-900">{earlyLevelResult.toFixed(1)} <span className="text-xs font-sans font-bold text-slate-400">mg/L</span></p>
                             <p className="text-[10px] text-slate-500">
                               {earlyLevelResult < 10 ? 'Sub-therapeutic' : earlyLevelResult > 20 ? 'High / Accumulating' : 'On Track'}
                             </p>
@@ -1359,7 +2002,7 @@ export default function App() {
 
                           <div className="p-4 bg-white rounded-xl border border-indigo-200 shadow-xs space-y-1">
                             <p className="text-[10px] text-slate-500 font-black uppercase">Projected SS Trough (Cmin)</p>
-                            <p className="text-2xl font-black text-slate-900">
+                            <p className="text-2xl font-black font-mono tabular-nums text-slate-900">
                               {earlySSPredictions ? `${earlySSPredictions.cmin.toFixed(1)} mg/L` : '—'}
                             </p>
                             <p className="text-[10px] text-slate-500">
@@ -1369,7 +2012,7 @@ export default function App() {
 
                           <div className="p-4 bg-white rounded-xl border border-indigo-200 shadow-xs space-y-1">
                             <p className="text-[10px] text-slate-500 font-black uppercase">Projected AUC24 / MIC</p>
-                            <p className="text-2xl font-black text-blue-600">
+                            <p className="text-2xl font-black font-mono tabular-nums text-blue-600">
                               {earlySSPredictions ? earlySSPredictions.aucMic.toFixed(0) : '—'}
                             </p>
                             <p className="text-[10px] text-slate-500">
